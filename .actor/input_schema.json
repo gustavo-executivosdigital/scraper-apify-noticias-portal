@@ -67,19 +67,19 @@
             "groupCaption": "Imagem da notícia (IA)",
             "groupDescription": "Geração da foto que ilustra cada matéria republicada (Gemini 2.5 Flash Image)."
         },
-        "geminiApiKey": {
-            "title": "Gemini API key",
+        "openRouterApiKey": {
+            "title": "OpenRouter API key",
             "type": "string",
-            "description": "Sua chave do Google AI Studio (https://aistudio.google.com/apikey) — necessária para gerar as imagens. Também pode vir da variável de ambiente GEMINI_API_KEY.",
+            "description": "Sua chave do OpenRouter (https://openrouter.ai/keys) — necessária para gerar as imagens. Também pode vir da variável de ambiente OPENROUTER_API_KEY.",
             "editor": "textfield",
             "isSecret": true
         },
-        "geminiImageModel": {
-            "title": "Modelo Gemini (imagem)",
+        "imageModel": {
+            "title": "Modelo de imagem (OpenRouter)",
             "type": "string",
-            "description": "Modelo de geração de imagem do Gemini.",
+            "description": "Modelo de geração de imagem no OpenRouter. Padrão: Google Gemini 2.5 Flash Image (Nano Banana).",
             "editor": "textfield",
-            "default": "gemini-2.5-flash-image"
+            "default": "google/gemini-2.5-flash-image"
         }
     },
     "required": ["searchQuery"]

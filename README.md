@@ -2,7 +2,7 @@ Searches **Google News** for any term, picks the strongest stories with AI, rewr
 
 ## What does Notícias Portal Rewriter do?
 
-Give it a search term like `taxas de logística` or `zé felipe e ana maria`. The Actor finds recent news on Google, extracts the **full text** of each article, then uses a **Groq AI** to select the best ones (you choose how many). Each selected story is **rewritten in fresh, original wording** — same facts and structure, no copied sentences — so it is safe to republish on your own portal. Finally it generates a matching **news image** with **Google Gemini 2.5 Flash Image** (or a free, keyless fallback).
+Give it a search term like `taxas de logística` or `zé felipe e ana maria`. The Actor finds recent news on Google, extracts the **full text** of each article, then uses a **Groq AI** to select the best ones (you choose how many). Each selected story is **rewritten in fresh, original wording** — same facts and structure, no copied sentences — so it is safe to republish on your own portal. Finally it generates a matching **news image** with **Google Gemini 2.5 Flash Image (Nano Banana)** via **OpenRouter**.
 
 Running on the Apify platform gives you API access, scheduling, integrations, proxy rotation, and run monitoring out of the box.
 
@@ -18,7 +18,7 @@ Running on the Apify platform gives you API access, scheduling, integrations, pr
 1. Enter a **search term** (`searchQuery`).
 2. Set **how many articles to fetch** (`maxArticles`) and **how many the AI should select** (`numToSelect`).
 3. Paste your **Groq API key** (free at https://console.groq.com).
-4. Paste your **Gemini API key** (free at https://aistudio.google.com/apikey) to generate high-quality images. Without it, the Actor still publishes the rewritten text, just without images.
+4. Paste your **OpenRouter API key** (from https://openrouter.ai/keys) to generate high-quality images. Without it, the Actor still publishes the rewritten text, just without images.
 5. Click **Start** and read the results in the **Output** tab.
 
 ## Input
@@ -33,8 +33,8 @@ Running on the Apify platform gives you API access, scheduling, integrations, pr
 | `groqModel` | Groq chat model. | `llama-3.3-70b-versatile` |
 | `titleStyle` | `portal` (catchy) or `faithful`. | `portal` |
 | `enableImage` | Generate an AI image per article. | `true` |
-| `geminiApiKey` | Google AI Studio key (required for images). | — |
-| `geminiImageModel` | Gemini image model. | `gemini-2.5-flash-image` |
+| `openRouterApiKey` | OpenRouter key (required for images). | — |
+| `imageModel` | Image model on OpenRouter. | `google/gemini-2.5-flash-image` |
 
 ## Output
 
@@ -67,16 +67,16 @@ Each republished article is one dataset item. You can download the dataset in JS
 
 ## Cost estimation
 
-Cost comes mainly from two composed Actors — `apify/google-search-scraper` (discovery) and `apify/website-content-crawler` (full-text extraction) — plus this Actor's compute. The AI calls run on **your own free Groq and Gemini keys**, so the text and image generation add no platform cost. Fetch fewer articles (`maxArticles`) to reduce Compute Units.
+Cost comes mainly from two composed Actors — `apify/google-search-scraper` (discovery) and `apify/website-content-crawler` (full-text extraction) — plus this Actor's compute. The AI calls run on **your own Groq and OpenRouter keys**, so the text and image generation add no Apify platform cost. Fetch fewer articles (`maxArticles`) to reduce Compute Units.
 
 ## Tips
 
 - Lower `maxArticles` and raise `numToSelect` close to it to spend less on extraction.
-- Set `enableImage: false` to skip image generation (and its Gemini quota) when you only need the rewritten text.
+- Set `enableImage: false` to skip image generation (and its OpenRouter cost) when you only need the rewritten text.
 - Schedule the Actor (e.g. hourly) to keep a portal continuously fed with fresh stories.
 
 ## FAQ, disclaimers, and support
 
 - **Is republishing legal?** You are responsible for how you use the output. Rewriting preserves facts but you should still credit sources and respect each publisher's Terms of Service and copyright.
 - **Why was a story skipped?** Some sites block extraction (paywalls, cookie walls); those articles are dropped before selection.
-- **Image didn't generate?** Check your Gemini key/quota — the Actor logs the reason and still publishes the text. Feedback and issues are welcome in the Issues tab.
+- **Image didn't generate?** Check your OpenRouter key/credits — the Actor logs the reason and still publishes the text. Feedback and issues are welcome in the Issues tab.

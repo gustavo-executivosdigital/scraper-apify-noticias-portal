@@ -5,7 +5,7 @@ Pipeline:
 2. Extract the full body of each candidate (infallible content crawler).
 3. A Groq AI selects the best N articles.
 4. A Groq AI rewrites each selected article for original republication.
-5. (Optional) Generate a high-quality editorial image per article with Gemini.
+5. (Optional) Generate a high-quality editorial image per article (Gemini Nano Banana via OpenRouter).
 6. Push one republished item per article to the dataset.
 
 Every stage degrades gracefully: a failure in extraction, selection, rewriting,
@@ -103,8 +103,8 @@ async def main() -> None:
         groq_model = (actor_input.get('groqModel') or ai_groq.DEFAULT_MODEL).strip()
         title_style = (actor_input.get('titleStyle') or 'portal').strip().lower()
         enable_image = bool(actor_input.get('enableImage', True))
-        gemini_api_key = (actor_input.get('geminiApiKey') or os.environ.get('GEMINI_API_KEY') or '').strip()
-        gemini_model = (actor_input.get('geminiImageModel') or 'gemini-2.5-flash-image').strip()
+        openrouter_api_key = (actor_input.get('openRouterApiKey') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
+        image_model = (actor_input.get('imageModel') or image_gen.DEFAULT_IMAGE_MODEL).strip()
 
         if not search_query:
             raise ValueError('Input "searchQuery" is required, e.g. "taxas de logística".')
@@ -117,11 +117,11 @@ async def main() -> None:
                 'A Groq API key is required (input "groqApiKey" or env GROQ_API_KEY) '
                 'to select and rewrite the articles. Get a free key at https://console.groq.com.'
             )
-        if enable_image and not gemini_api_key:
+        if enable_image and not openrouter_api_key:
             Actor.log.warning(
-                'Image generation is ON but no Gemini API key was provided '
-                '(input "geminiApiKey" or env GEMINI_API_KEY). Skipping images; '
-                'articles will still be published. Get a free key at https://aistudio.google.com/apikey.'
+                'Image generation is ON but no OpenRouter API key was provided '
+                '(input "openRouterApiKey" or env OPENROUTER_API_KEY). Skipping images; '
+                'articles will still be published. Get a key at https://openrouter.ai/keys.'
             )
             enable_image = False
 
@@ -188,8 +188,8 @@ async def main() -> None:
                     image_info = await _maybe_generate_image(
                         client, store,
                         index=position,
-                        api_key=gemini_api_key,
-                        model=gemini_model,
+                        api_key=openrouter_api_key,
+                        model=image_model,
                         title=rewritten['title'],
                         lead=_lead(rewritten['body']),
                     )
