@@ -53,6 +53,7 @@ async def _chat(
     *,
     json_mode: bool,
     temperature: float,
+    max_tokens: int | None = None,
 ) -> str:
     """Call Groq chat completions, falling back across models on a 404."""
     models_to_try = [model] + [m for m in FALLBACK_MODELS if m != model]
@@ -64,6 +65,10 @@ async def _chat(
             'messages': messages,
             'temperature': temperature,
         }
+        # Give long-form generations (the rewrite) enough room; without this the
+        # model may stop early and the article body comes back short/truncated.
+        if max_tokens is not None:
+            payload['max_tokens'] = max_tokens
         if json_mode:
             payload['response_format'] = {'type': 'json_object'}
         try:
@@ -216,24 +221,35 @@ async def rewrite_article(
         'Reescreva a matéria para republicação com palavras 100% próprias, preservando TODOS os '
         'fatos, nomes, números e a estrutura jornalística (lide + corpo em parágrafos). Use o '
         'vocabulário do setor de logística quando couber, mantendo o tom informativo e neutro. '
-        'NÃO copie frases do original, NÃO invente fatos, NÃO adicione opinião. Escreva em '
-        'português do Brasil. Responda SOMENTE em JSON.'
+        'NÃO copie frases do original e NÃO adicione opinião. Escreva em português do Brasil. '
+        'A matéria deve ser EXTENSA e BEM DESENVOLVIDA (texto longo de portal). Para alcançar '
+        'esse tamanho, desenvolva cada ponto com profundidade jornalística: explique o contexto '
+        'do setor, os antecedentes, os impactos na operação logística (transporte, frete, '
+        'armazenagem, custos, prazos), as implicações para empresas e para o mercado, e as '
+        'perspectivas. Você PODE ampliar com contextualização e análise setorial geral, mas é '
+        'PROIBIDO inventar fatos específicos: não crie números, datas, nomes, cargos, falas, '
+        'citações, estatísticas ou eventos que não estejam no texto original. A expansão deve ser '
+        'contextual e analítica, nunca factual inventada. Responda SOMENTE em JSON.'
     )
     user = (
         f'{title_instruction}\n\n'
         f'Título original: {title}\n\n'
         f'Matéria original:\n{original}{truncated_note}\n\n'
+        'Escreva uma matéria LONGA e completa: no mínimo 600 palavras, idealmente entre 700 e 900 '
+        'palavras, com 8 a 12 parágrafos bem desenvolvidos (vários períodos cada). Não escreva '
+        'parágrafos curtos nem texto raso. Você pode incluir 1 ou 2 subtítulos curtos de seção '
+        '(uma linha própria, sem markdown e sem dois-pontos) para organizar o texto.\n\n'
         'Responda no formato JSON exato:\n'
         '{"title": "<novo título>", '
         '"resumo": "<resumo real da matéria em 1 a 2 frases, no máximo 280 caracteres, sem repetir o título>", '
         '"tags": ["<3 a 6 termos curtos do tema de logística, em pt-BR e minúsculas>"], '
-        '"body": "<matéria reescrita, 3 a 6 parágrafos separados por \\n\\n>"}'
+        '"body": "<matéria reescrita, longa, 8 a 12 parágrafos separados por \\n\\n>"}'
     )
 
     content = await _chat(
         client, api_key, model,
         [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-        json_mode=True, temperature=0.7,
+        json_mode=True, temperature=0.7, max_tokens=4096,
     )
     parsed = _safe_json(content) or {}
     if not isinstance(parsed, dict):
