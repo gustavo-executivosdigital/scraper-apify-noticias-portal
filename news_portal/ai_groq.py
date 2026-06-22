@@ -13,6 +13,7 @@ and the orchestrator logs them and degrades gracefully.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -20,6 +21,12 @@ import httpx
 from apify import Actor
 
 from . import textmatch
+
+# Free Groq tiers cap tokens-per-minute (e.g. 12k TPM). A heavy rewrite (~8-9k tokens)
+# means the next call in the same minute hits HTTP 429. We wait it out and retry instead
+# of failing: honor the server's Retry-After, else wait a full minute (the TPM window).
+_MAX_RATE_LIMIT_RETRIES = 6
+_DEFAULT_RATE_LIMIT_WAIT = 60.0
 
 GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 DEFAULT_MODEL = 'llama-3.3-70b-versatile'
@@ -32,6 +39,13 @@ FALLBACK_MODELS = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'openai/gp
 # bounded for cost. The rewrite gets the most context.
 _MAX_BODY_CHARS_FOR_SELECTION = 2200
 _MAX_BODY_CHARS_FOR_REWRITE = 8000
+
+# Total budget of article-preview characters in ONE selection prompt. The free Groq tier
+# caps tokens-per-minute (~12k), and a single request bigger than that can NEVER succeed
+# (retrying doesn't help). ~28k chars ≈ 7k tokens keeps the whole selection call safely
+# under the cap even with a large candidate pool. Per-article preview shrinks to fit.
+_SELECTION_TOTAL_CHAR_BUDGET = 28000
+_MIN_BODY_CHARS_FOR_SELECTION = 400
 
 # Hard quality floor enforced IN CODE (not just requested in the prompt): any article
 # the editor AI scored below this is dropped even if it returned it. The prompt asks
@@ -86,7 +100,7 @@ async def _chat(
     temperature: float,
     max_tokens: int | None = None,
 ) -> str:
-    """Call Groq chat completions, falling back across models on a 404."""
+    """Call Groq chat completions, retrying on rate limits and falling back on 404."""
     models_to_try = [model] + [m for m in FALLBACK_MODELS if m != model]
     last_error: Exception | None = None
 
@@ -102,27 +116,89 @@ async def _chat(
             payload['max_tokens'] = max_tokens
         if json_mode:
             payload['response_format'] = {'type': 'json_object'}
-        try:
-            response = await client.post(
-                GROQ_URL,
-                headers={'Authorization': f'Bearer {api_key}'},
-                json=payload,
-                timeout=120,
-            )
-        except httpx.HTTPError as exc:
-            last_error = exc
-            continue
 
-        if response.status_code == 404:
-            last_error = RuntimeError(f'Groq model "{candidate}" not available (404).')
-            continue
-        if response.status_code != 200:
-            raise RuntimeError(f'Groq API error {response.status_code}: {response.text[:300]}')
+        # Retry THIS model on 429 (tokens-per-minute limit). We wait the time the server
+        # asks for (or a full minute) and try again, so free-tier runs simply pace
+        # themselves instead of failing the article.
+        rate_limited = False
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                response = await client.post(
+                    GROQ_URL,
+                    headers={'Authorization': f'Bearer {api_key}'},
+                    json=payload,
+                    timeout=180,
+                )
+            except httpx.HTTPError as exc:
+                last_error = exc
+                break  # network error: try the next model
 
-        data = response.json()
-        return data['choices'][0]['message']['content']
+            if response.status_code == 429:
+                last_error = RuntimeError('Groq rate limit (429).')
+                if attempt >= _MAX_RATE_LIMIT_RETRIES:
+                    rate_limited = True
+                    break
+                wait = _retry_after_seconds(response) or _DEFAULT_RATE_LIMIT_WAIT
+                Actor.log.warning(
+                    f'Groq atingiu o limite de tokens/minuto (429). Aguardando {wait:.0f}s e '
+                    f'tentando de novo (tentativa {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES})...'
+                )
+                await asyncio.sleep(wait)
+                continue
+
+            if response.status_code == 404:
+                last_error = RuntimeError(f'Groq model "{candidate}" not available (404).')
+                break  # try the next model
+            if response.status_code != 200:
+                raise RuntimeError(f'Groq API error {response.status_code}: {response.text[:300]}')
+
+            data = response.json()
+            return data['choices'][0]['message']['content']
+
+        # If we exhausted rate-limit retries, switching model won't help (same account
+        # TPM budget), so stop and surface the error.
+        if rate_limited:
+            break
 
     raise RuntimeError(f'All Groq models failed. Last error: {last_error}')
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Seconds to wait before retrying, parsed from Groq's rate-limit headers.
+
+    Honors ``Retry-After`` (seconds) and the ``x-ratelimit-reset-*`` headers (values
+    like ``"6.5s"`` or ``"1m30s"``). Adds a 1s safety buffer. Returns ``None`` if no
+    usable hint is present, letting the caller fall back to a default wait.
+    """
+    for header in ('retry-after', 'x-ratelimit-reset-tokens', 'x-ratelimit-reset-requests'):
+        value = response.headers.get(header)
+        if not value:
+            continue
+        seconds = _parse_duration(value)
+        if seconds is not None:
+            return seconds + 1.0
+    return None
+
+
+def _parse_duration(value: str) -> float | None:
+    """Parse ``"45"``, ``"6.5s"``, ``"2m"``, ``"1m30s"``, ``"850ms"`` into seconds."""
+    text = (value or '').strip().lower()
+    if not text:
+        return None
+    # Plain number = seconds.
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    if text.endswith('ms') and text[:-2].replace('.', '', 1).isdigit():
+        return float(text[:-2]) / 1000
+    total = 0.0
+    matched = False
+    for amount, unit in re.findall(r'([\d.]+)\s*(ms|s|m|h)', text):
+        matched = True
+        num = float(amount)
+        total += num * {'ms': 0.001, 's': 1, 'm': 60, 'h': 3600}[unit]
+    return total if matched else None
 
 
 async def select_best(
@@ -140,9 +216,18 @@ async def select_best(
     do not pad to ``n`` with junk and we do not fall back to an arbitrary article:
     publishing nothing is preferable to republishing unimportant content.
     """
+    # Size each article's preview so the whole selection prompt fits the free-tier
+    # per-minute token budget, even with a large candidate pool.
+    per_article_chars = _MAX_BODY_CHARS_FOR_SELECTION
+    if articles:
+        per_article_chars = max(
+            _MIN_BODY_CHARS_FOR_SELECTION,
+            min(_MAX_BODY_CHARS_FOR_SELECTION, _SELECTION_TOTAL_CHAR_BUDGET // len(articles)),
+        )
+
     catalog = []
     for i, art in enumerate(articles):
-        body_preview = (art.get('body') or '')[:_MAX_BODY_CHARS_FOR_SELECTION]
+        body_preview = (art.get('body') or '')[:per_article_chars]
         title = art.get('title', '')
         date = art.get('date') or 'não informada'
         flag = (
