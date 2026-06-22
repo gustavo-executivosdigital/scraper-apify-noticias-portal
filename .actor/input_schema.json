@@ -62,24 +62,15 @@
         "enableImage": {
             "title": "Gerar imagem com IA",
             "type": "boolean",
-            "description": "Quando ligado, gera uma imagem editorial para cada notícia republicada usando o provedor escolhido abaixo.",
+            "description": "Quando ligado, gera uma imagem editorial de alta qualidade para cada notícia republicada usando o Google Gemini 2.5 Flash Image (Nano Banana). A imagem é coerente com a matéria e nunca contém texto.",
             "default": true,
             "groupCaption": "Imagem da notícia (IA)",
-            "groupDescription": "Geração da foto que ilustra cada matéria republicada."
-        },
-        "imageProvider": {
-            "title": "Provedor de imagem",
-            "type": "string",
-            "description": "Qual IA usar para gerar a imagem. 'gemini' = Google Gemini 2.5 Flash Image (alta qualidade, exige Gemini API key). 'pollinations' = grátis e sem chave (fallback de teste).",
-            "editor": "select",
-            "default": "gemini",
-            "enum": ["gemini", "pollinations"],
-            "enumTitles": ["Google Gemini 2.5 Flash Image", "Pollinations (grátis, sem chave)"]
+            "groupDescription": "Geração da foto que ilustra cada matéria republicada (Gemini 2.5 Flash Image)."
         },
         "geminiApiKey": {
             "title": "Gemini API key",
             "type": "string",
-            "description": "Sua chave do Google AI Studio (https://aistudio.google.com/apikey) — necessária quando o provedor de imagem é 'gemini'. Também pode vir da variável de ambiente GEMINI_API_KEY.",
+            "description": "Sua chave do Google AI Studio (https://aistudio.google.com/apikey) — necessária para gerar as imagens. Também pode vir da variável de ambiente GEMINI_API_KEY.",
             "editor": "textfield",
             "isSecret": true
         },

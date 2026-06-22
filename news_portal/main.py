@@ -5,7 +5,7 @@ Pipeline:
 2. Extract the full body of each candidate (infallible content crawler).
 3. A Groq AI selects the best N articles.
 4. A Groq AI rewrites each selected article for original republication.
-5. (Optional) Generate an editorial image per article (Gemini, or free Pollinations).
+5. (Optional) Generate a high-quality editorial image per article with Gemini.
 6. Push one republished item per article to the dataset.
 
 Every stage degrades gracefully: a failure in extraction, selection, rewriting,
@@ -47,7 +47,6 @@ async def _maybe_generate_image(
     store: object,
     *,
     index: int,
-    provider: str,
     api_key: str,
     model: str,
     title: str,
@@ -57,7 +56,7 @@ async def _maybe_generate_image(
     prompt = image_gen.build_prompt(title, lead)
     try:
         result = await image_gen.generate_image(
-            client, provider=provider, api_key=api_key, model=model, prompt=prompt
+            client, api_key=api_key, model=model, prompt=prompt
         )
     except Exception as exc:  # noqa: BLE001 - image is best-effort
         Actor.log.warning(f'Image generation failed for article #{index}: {exc}')
@@ -104,7 +103,6 @@ async def main() -> None:
         groq_model = (actor_input.get('groqModel') or ai_groq.DEFAULT_MODEL).strip()
         title_style = (actor_input.get('titleStyle') or 'portal').strip().lower()
         enable_image = bool(actor_input.get('enableImage', True))
-        image_provider = (actor_input.get('imageProvider') or 'gemini').strip().lower()
         gemini_api_key = (actor_input.get('geminiApiKey') or os.environ.get('GEMINI_API_KEY') or '').strip()
         gemini_model = (actor_input.get('geminiImageModel') or 'gemini-2.5-flash-image').strip()
 
@@ -119,12 +117,13 @@ async def main() -> None:
                 'A Groq API key is required (input "groqApiKey" or env GROQ_API_KEY) '
                 'to select and rewrite the articles. Get a free key at https://console.groq.com.'
             )
-        if enable_image and image_provider == 'gemini' and not gemini_api_key:
+        if enable_image and not gemini_api_key:
             Actor.log.warning(
-                'Image generation is ON with provider "gemini" but no Gemini API key was '
-                'provided. Falling back to the free "pollinations" provider.'
+                'Image generation is ON but no Gemini API key was provided '
+                '(input "geminiApiKey" or env GEMINI_API_KEY). Skipping images; '
+                'articles will still be published. Get a free key at https://aistudio.google.com/apikey.'
             )
-            image_provider = 'pollinations'
+            enable_image = False
 
         # --- 1. Discover ----------------------------------------------------------
         articles = await discovery.search_news(search_query, max_articles, country_code)
@@ -189,8 +188,7 @@ async def main() -> None:
                     image_info = await _maybe_generate_image(
                         client, store,
                         index=position,
-                        provider=image_provider,
-                        api_key=gemini_api_key if image_provider == 'gemini' else '',
+                        api_key=gemini_api_key,
                         model=gemini_model,
                         title=rewritten['title'],
                         lead=_lead(rewritten['body']),

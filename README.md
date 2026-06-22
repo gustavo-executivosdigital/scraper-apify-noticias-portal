@@ -18,7 +18,7 @@ Running on the Apify platform gives you API access, scheduling, integrations, pr
 1. Enter a **search term** (`searchQuery`).
 2. Set **how many articles to fetch** (`maxArticles`) and **how many the AI should select** (`numToSelect`).
 3. Paste your **Groq API key** (free at https://console.groq.com).
-4. (Optional) Paste your **Gemini API key** (free at https://aistudio.google.com/apikey) to generate high-quality images. Without it, the Actor falls back to the free Pollinations provider.
+4. Paste your **Gemini API key** (free at https://aistudio.google.com/apikey) to generate high-quality images. Without it, the Actor still publishes the rewritten text, just without images.
 5. Click **Start** and read the results in the **Output** tab.
 
 ## Input
@@ -33,8 +33,7 @@ Running on the Apify platform gives you API access, scheduling, integrations, pr
 | `groqModel` | Groq chat model. | `llama-3.3-70b-versatile` |
 | `titleStyle` | `portal` (catchy) or `faithful`. | `portal` |
 | `enableImage` | Generate an AI image per article. | `true` |
-| `imageProvider` | `gemini` or `pollinations`. | `gemini` |
-| `geminiApiKey` | Google AI Studio key (for `gemini`). | — |
+| `geminiApiKey` | Google AI Studio key (required for images). | — |
 | `geminiImageModel` | Gemini image model. | `gemini-2.5-flash-image` |
 
 ## Output
@@ -73,7 +72,7 @@ Cost comes mainly from two composed Actors — `apify/google-search-scraper` (di
 ## Tips
 
 - Lower `maxArticles` and raise `numToSelect` close to it to spend less on extraction.
-- Use `imageProvider: pollinations` to run the whole pipeline at **zero AI cost** while testing.
+- Set `enableImage: false` to skip image generation (and its Gemini quota) when you only need the rewritten text.
 - Schedule the Actor (e.g. hourly) to keep a portal continuously fed with fresh stories.
 
 ## FAQ, disclaimers, and support
