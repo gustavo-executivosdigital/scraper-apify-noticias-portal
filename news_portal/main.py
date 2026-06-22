@@ -137,7 +137,17 @@ async def main() -> None:
             enable_image = False
 
         # --- 1. Discover ----------------------------------------------------------
-        articles = await discovery.search_news(search_query, max_articles, country_code)
+        # Funil: para entregar ``num_to_select`` notícias DISTINTAS e boas, precisamos de um
+        # pool de candidatos bem maior que isso — notícias de logística costumam vir em
+        # cluster (vários portais cobrindo o mesmo fato), e o dedup + filtro de importância
+        # reduzem muito o conjunto. Buscamos ~4x o desejado (mantendo ``maxArticles`` como
+        # piso), de forma 100% interna: a interface de entrada/saída do Actor não muda.
+        candidate_pool = min(max(max_articles, num_to_select * 4), 50)
+        articles = await discovery.search_news(search_query, candidate_pool, country_code)
+        Actor.log.info(
+            f'Funil: alvo de {num_to_select} notícia(s) distintas; buscando pool de até '
+            f'{candidate_pool} candidatos.'
+        )
         if not articles:
             Actor.log.warning('No news articles found for this term. Try a broader or different query.')
             return

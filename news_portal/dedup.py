@@ -16,11 +16,11 @@ two different portals is recognized as the same story.
 
 from __future__ import annotations
 
-import re
-import unicodedata
 from urllib.parse import urlparse
 
 from apify import Actor
+
+from . import textmatch
 
 # Named store that persists across runs (unlike the default per-run store).
 HISTORY_STORE_NAME = 'news-history'
@@ -33,21 +33,9 @@ _MAX_HISTORY = 2000
 # same story by this deterministic layer. Kept moderate on purpose: the editor AI does
 # the strong *semantic* dedup; this code is the deterministic safety net for identical
 # and near-identical headlines (notably the same article reappearing across runs, where
-# the title is usually byte-for-byte identical and matches at 1.0).
+# the title is usually byte-for-byte identical and matches at 1.0). The *exact URL* match
+# below is the hard guarantee that a story from a previous run is never republished.
 _TITLE_SIMILARITY = 0.5
-
-# Tiny pt-BR stopword set so common words don't inflate title similarity.
-_STOPWORDS = {
-    'a', 'o', 'as', 'os', 'um', 'uma', 'de', 'do', 'da', 'dos', 'das', 'e', 'em',
-    'no', 'na', 'nos', 'nas', 'por', 'para', 'pra', 'com', 'sem', 'que', 'se', 'ao',
-    'aos', 'as', 'sobre', 'após', 'apos', 'entre', 'the', 'of', 'to', 'in', 'on',
-}
-
-
-def _strip_accents(text: str) -> str:
-    return ''.join(
-        c for c in unicodedata.normalize('NFKD', text) if not unicodedata.combining(c)
-    )
 
 
 def _url_key(url: str) -> str:
@@ -63,23 +51,15 @@ def _url_key(url: str) -> str:
 
 def _title_tokens(title: str) -> set[str]:
     """Significant, accent-free, lowercased tokens of a title."""
-    clean = _strip_accents((title or '').lower())
-    words = re.findall(r'[a-z0-9]+', clean)
-    return {w for w in words if len(w) > 2 and w not in _STOPWORDS}
+    return textmatch.tokens(title)
 
 
 def _similar_titles(a: set[str], b: set[str]) -> bool:
-    if not a or not b:
-        return False
-    inter = len(a & b)
-    if inter == 0:
-        return False
-    union = len(a | b)
-    return inter / union >= _TITLE_SIMILARITY
+    return textmatch.jaccard(a, b) >= _TITLE_SIMILARITY
 
 
 def _is_same_story(art: dict, url_keys: set[str], token_sets: list[set[str]]) -> bool:
-    """True if ``art`` matches an already-seen URL or a near-identical title."""
+    """True if ``art`` matches an already-seen URL (hard match) or a near-identical title."""
     if _url_key(art.get('url', '')) in url_keys:
         return True
     tokens = _title_tokens(art.get('title', ''))

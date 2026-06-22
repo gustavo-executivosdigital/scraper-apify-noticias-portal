@@ -17,6 +17,9 @@ import json
 import re
 
 import httpx
+from apify import Actor
+
+from . import textmatch
 
 GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 DEFAULT_MODEL = 'llama-3.3-70b-versatile'
@@ -173,24 +176,33 @@ async def select_best(
         'colunas de opinião, publicidade/publieditorial/conteúdo patrocinado, releases promocionais de '
         'produto, matérias institucionais de autopromoção, motivacional, e qualquer coisa fora do tema '
         'de logística ou de fonte fraca/duvidosa.\n\n'
-        'DEDUPLICAÇÃO: se a MESMA notícia (mesmo fato/acontecimento) aparecer em fontes diferentes ou '
-        'com títulos parecidos, selecione APENAS a melhor versão (fonte mais forte e texto mais '
-        'completo) e descarte TODAS as outras. Nunca selecione dois artigos que cobrem o mesmo fato.\n\n'
+        'AGRUPAR POR ASSUNTO (passo OBRIGATÓRIO antes de selecionar): muitos artigos cobrem o MESMO '
+        'acontecimento/assunto com palavras diferentes — por exemplo "Amazon investe em centro de '
+        'distribuição", "Amazon expande no Brasil" e "Amazon inaugura novo centro" são TODOS o MESMO '
+        'assunto. Agrupe mentalmente os artigos por assunto/evento real (empresa + acontecimento) e, '
+        'de cada grupo, selecione APENAS UM — a melhor versão (fonte mais forte, texto mais completo e '
+        'recente). É TERMINANTEMENTE PROIBIDO selecionar dois artigos do mesmo assunto/evento, mesmo '
+        'que o enfoque, o título ou as palavras sejam diferentes. Cada item selecionado deve tratar de '
+        'um assunto DISTINTO dos demais.\n\n'
         'É MUITO melhor selecionar MENOS artigos (ou nenhum) do que incluir material fraco, repetido, '
-        'superficial ou fora do tema. Responda SOMENTE em JSON.'
+        'superficial ou fora do tema. Prefira variedade de assuntos distintos e relevantes. '
+        'Responda SOMENTE em JSON.'
     )
     user = (
         f'Avalie individualmente os artigos abaixo e selecione no máximo {n} que sejam NOTÍCIAS REAIS '
-        'E IMPORTANTES de logística para um portal. Descarte dicas/listas/tutoriais/opinião/'
-        'publicidade e descarte duplicatas do mesmo fato.\n\n'
+        'E IMPORTANTES de logística para um portal, cada uma sobre um ASSUNTO DISTINTO. Descarte '
+        'dicas/listas/tutoriais/opinião/publicidade e, quando vários artigos forem do mesmo assunto/'
+        'evento, escolha só a melhor versão e descarte as demais.\n\n'
         + '\n\n'.join(catalog)
         + '\n\nResponda no formato JSON exato:\n'
-        '{"selected": [{"index": <int>, "score": <0-100>, "reason": "<motivo curto em pt-BR explicando '
-        'por que é uma notícia importante>"}]}\n'
-        f'A lista "selected" deve ter no máximo {n} itens, ordenados do melhor para o pior. '
-        'Inclua APENAS artigos com score >= 60 (notícia realmente importante); se houver menos que isso, '
-        'retorne menos itens — ou uma lista vazia se nenhum prestar. NUNCA inclua duplicatas do mesmo fato '
-        'nem conteúdo superficial.'
+        '{"selected": [{"index": <int>, "score": <0-100>, '
+        '"assunto": "<rótulo curto e canônico do assunto/evento, 2 a 5 palavras, ex.: \\"amazon centro '
+        'distribuicao\\" ou \\"antt reajuste pedagio\\">", '
+        '"reason": "<motivo curto em pt-BR explicando por que é uma notícia importante>"}]}\n'
+        f'A lista "selected" deve ter no máximo {n} itens, todos de ASSUNTOS DISTINTOS, ordenados do '
+        'melhor para o pior. Inclua APENAS artigos com score >= 60 (notícia realmente importante); se '
+        'houver menos assuntos distintos que isso, retorne menos itens — ou uma lista vazia se nenhum '
+        'prestar. NUNCA inclua dois itens do mesmo assunto/evento nem conteúdo superficial.'
     )
 
     content = await _chat(
@@ -201,7 +213,9 @@ async def select_best(
     parsed = _safe_json(content) or {}
     raw = parsed.get('selected', []) if isinstance(parsed, dict) else []
 
-    picks: list[dict] = []
+    # First pass: validate index, enforce the hard score floor, capture each pick's
+    # subject label. We sort by score so the per-subject collapse keeps the strongest.
+    candidates: list[dict] = []
     used: set[int] = set()
     for item in raw:
         try:
@@ -215,13 +229,46 @@ async def select_best(
         if score < _MIN_SELECTION_SCORE:
             continue
         used.add(idx)
-        picks.append(
+        # Keep the AI's canonical subject label and the real title as SEPARATE token sets.
+        # The label compared against other labels is the strongest same-subject signal;
+        # mixing it with the noisy title would dilute it. Title tokens are a fallback for
+        # when the AI omits/weakens the label.
+        assunto = str(item.get('assunto') or '').strip()
+        title_tokens = textmatch.tokens(articles[idx].get('title', ''))
+        subject_tokens = textmatch.tokens(assunto) or title_tokens
+        candidates.append(
             {
                 'index': idx,
                 'score': score,
                 'reason': str(item.get('reason') or '').strip(),
+                '_subject': subject_tokens,
+                '_title': title_tokens,
             }
         )
+
+    candidates.sort(key=lambda c: c['score'], reverse=True)
+
+    # Second pass — deterministic SEMANTIC dedup backstop: even if the AI slipped and
+    # returned two picks about the same subject (e.g. three "Amazon novo centro"
+    # articles), keep only the highest-scored one per subject. We collapse when the
+    # canonical subject labels strongly overlap OR the titles are near-identical. This
+    # is what guarantees the published set never has near-duplicate stories.
+    picks: list[dict] = []
+    kept: list[dict] = []
+    for cand in candidates:
+        duplicate = any(
+            textmatch.overlap_coefficient(cand['_subject'], k['_subject']) >= 0.6
+            or textmatch.jaccard(cand['_title'], k['_title']) >= 0.5
+            for k in kept
+        )
+        if duplicate:
+            Actor.log.info(
+                f'Dedup semântico (seleção): artigo #{cand["index"]} descartado por ser do mesmo '
+                f'assunto de outro já selecionado.'
+            )
+            continue
+        kept.append(cand)
+        picks.append({k: v for k, v in cand.items() if not k.startswith('_')})
         if len(picks) >= n:
             break
 
@@ -261,31 +308,34 @@ async def rewrite_article(
         'Você é um jornalista de um portal brasileiro especializado em LOGÍSTICA, transporte, '
         'frete, cadeia de suprimentos, comércio exterior, rodovias/portos e regulação do setor. '
         'Reescreva a matéria para republicação com palavras 100% próprias, preservando TODOS os '
-        'fatos, nomes, números e a estrutura jornalística (lide + corpo em parágrafos). Use o '
+        'fatos, nomes, números, datas e a estrutura jornalística (lide + corpo em parágrafos). Use o '
         'vocabulário do setor de logística quando couber, mantendo o tom informativo e neutro. '
-        'NÃO copie frases do original e NÃO adicione opinião. Escreva em português do Brasil. '
-        'A matéria deve ser EXTENSA e BEM DESENVOLVIDA (texto longo de portal). Para alcançar '
-        'esse tamanho, desenvolva cada ponto com profundidade jornalística: explique o contexto '
-        'do setor, os antecedentes, os impactos na operação logística (transporte, frete, '
-        'armazenagem, custos, prazos), as implicações para empresas e para o mercado, e as '
-        'perspectivas. Você PODE ampliar com contextualização e análise setorial geral, mas é '
-        'PROIBIDO inventar fatos específicos: não crie números, datas, nomes, cargos, falas, '
-        'citações, estatísticas ou eventos que não estejam no texto original. A expansão deve ser '
-        'contextual e analítica, nunca factual inventada. Responda SOMENTE em JSON.'
+        'NÃO copie frases do original e NÃO adicione opinião. Escreva em português do Brasil.\n\n'
+        'REGRA DE OURO DO CONTEÚDO: o texto deve ser construído com a INFORMAÇÃO REAL da matéria '
+        'original — fatos, dados, números, nomes, declarações e contexto que REALMENTE estão na fonte. '
+        'EXTRAIA o máximo de informação concreta do original e desenvolva cada fato com clareza e '
+        'profundidade jornalística (o quê, quem, quando, onde, por quê, e o impacto na operação '
+        'logística: transporte, frete, armazenagem, custos, prazos). NÃO ENCHA LINGUIÇA: é proibido '
+        'preencher com frases genéricas, vagas, repetitivas ou "de contexto" só para aumentar o '
+        'tamanho, e é proibido INVENTAR qualquer número, data, nome, cargo, fala, estatística ou '
+        'evento que não esteja na fonte. Prefira densidade de informação real a volume vazio. '
+        'Responda SOMENTE em JSON.'
     )
     user = (
         f'{title_instruction}\n\n'
         f'Título original: {title}\n\n'
         f'Matéria original:\n{original}{truncated_note}\n\n'
-        'Escreva uma matéria LONGA e completa: no mínimo 600 palavras, idealmente entre 700 e 900 '
-        'palavras, com 8 a 12 parágrafos bem desenvolvidos (vários períodos cada). Não escreva '
-        'parágrafos curtos nem texto raso. Você pode incluir 1 ou 2 subtítulos curtos de seção '
-        '(uma linha própria, sem markdown e sem dois-pontos) para organizar o texto.\n\n'
+        'Escreva uma matéria substancial e bem desenvolvida, com NO MÍNIMO ~1000 caracteres. Quando a '
+        'matéria original for rica em informação, vá MAIS LONGE e aproveite ao máximo todos os fatos '
+        'disponíveis (faça o texto crescer com substância real, não com enchimento). Quando a fonte '
+        'for pobre, desenvolva o que houver com clareza, sem inventar nem repetir ideias só para '
+        'alongar. Parágrafos separados por \\n\\n; você pode usar 1 ou 2 subtítulos curtos de seção '
+        '(uma linha própria, sem markdown e sem dois-pontos) quando o conteúdo justificar.\n\n'
         'Responda no formato JSON exato:\n'
         '{"title": "<novo título>", '
         '"resumo": "<resumo real da matéria em 1 a 2 frases, no máximo 280 caracteres, sem repetir o título>", '
         '"tags": ["<3 a 6 termos curtos do tema de logística, em pt-BR e minúsculas>"], '
-        '"body": "<matéria reescrita, longa, 8 a 12 parágrafos separados por \\n\\n>"}'
+        '"body": "<matéria reescrita, com substância real, parágrafos separados por \\n\\n>"}'
     )
 
     content = await _chat(
