@@ -1,0 +1,69 @@
+{
+    "$schema": "https://apify.com/schemas/v1/dataset.ide.json",
+    "actorSpecification": 1,
+    "fields": {},
+    "views": {
+        "overview": {
+            "title": "Notícias republicadas",
+            "transformation": {
+                "fields": [
+                    "imageUrl",
+                    "rewrittenTitle",
+                    "rewrittenBody",
+                    "source",
+                    "publishedAt",
+                    "originalTitle",
+                    "originalUrl",
+                    "score",
+                    "selectionReason",
+                    "searchQuery"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "imageUrl": {
+                        "label": "Imagem",
+                        "format": "image"
+                    },
+                    "rewrittenTitle": {
+                        "label": "Título (reescrito)",
+                        "format": "text"
+                    },
+                    "rewrittenBody": {
+                        "label": "Matéria (reescrita)",
+                        "format": "text"
+                    },
+                    "source": {
+                        "label": "Fonte",
+                        "format": "text"
+                    },
+                    "publishedAt": {
+                        "label": "Publicado",
+                        "format": "text"
+                    },
+                    "originalTitle": {
+                        "label": "Título original",
+                        "format": "text"
+                    },
+                    "originalUrl": {
+                        "label": "Link original",
+                        "format": "link"
+                    },
+                    "score": {
+                        "label": "Nota IA",
+                        "format": "number"
+                    },
+                    "selectionReason": {
+                        "label": "Motivo da seleção",
+                        "format": "text"
+                    },
+                    "searchQuery": {
+                        "label": "Termo",
+                        "format": "text"
+                    }
+                }
+            }
+        }
+    }
+}

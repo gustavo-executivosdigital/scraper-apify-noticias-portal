@@ -1,0 +1,7 @@
+# Python dependencies for the News Portal Rewriter Actor.
+# https://pip.pypa.io/en/latest/reference/requirements-file-format/
+
+apify >= 3.0.0, < 4.0.0
+# HTTP client for the Groq (text) and Gemini (image) REST APIs and the
+# Pollinations fallback. Also a transitive dependency of `apify`.
+httpx

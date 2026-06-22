@@ -1,0 +1,19 @@
+{
+    "$schema": "https://apify.com/schemas/v1/actor.ide.json",
+    "actorSpecification": 1,
+    "name": "noticias-portal-rewriter",
+    "title": "Notícias Portal Rewriter",
+    "description": "Busca notícias no Google por um termo, escolhe as melhores com IA (Groq), reescreve cada uma mantendo a estrutura para republicação original e gera uma imagem editorial com IA (Gemini 2.5 Flash Image).",
+    "version": "0.1",
+    "buildTag": "latest",
+    "meta": {
+        "templateId": "python-crawlee-beautifulsoup",
+        "generatedBy": "Claude Code with Claude Opus 4.8"
+    },
+    "input": "./input_schema.json",
+    "output": "./output_schema.json",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    },
+    "dockerfile": "../Dockerfile"
+}

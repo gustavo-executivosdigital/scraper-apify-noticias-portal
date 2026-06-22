@@ -1,0 +1,95 @@
+{
+    "$schema": "https://apify.com/schemas/v1/input.ide.json",
+    "title": "Notícias Portal Rewriter",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "searchQuery": {
+            "title": "Termo de pesquisa",
+            "type": "string",
+            "description": "O termo a pesquisar nas notícias do Google. Exemplos: \"taxas de logística\", \"zé felipe e ana maria\".",
+            "editor": "textfield",
+            "prefill": "taxas de logística"
+        },
+        "maxArticles": {
+            "title": "Quantas notícias buscar",
+            "type": "integer",
+            "description": "Quantas notícias coletar e ter o conteúdo extraído antes da IA selecionar as melhores. Buscar mais aumenta a chance de boas matérias, mas consome mais Compute Units.",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 50
+        },
+        "numToSelect": {
+            "title": "Quantas a IA seleciona",
+            "type": "integer",
+            "description": "Quantas das melhores notícias a IA do Groq deve selecionar para reescrever e republicar.",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20
+        },
+        "countryCode": {
+            "title": "País",
+            "type": "string",
+            "description": "País usado na busca do Google (geolocaliza os resultados).",
+            "editor": "select",
+            "default": "br",
+            "enum": ["br", "pt", "us"],
+            "enumTitles": ["Brasil", "Portugal", "Estados Unidos"]
+        },
+        "groqApiKey": {
+            "title": "Groq API key",
+            "type": "string",
+            "description": "Sua chave do Groq (https://console.groq.com) — usada para SELECIONAR e REESCREVER as notícias. Também pode vir da variável de ambiente GROQ_API_KEY.",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "groqModel": {
+            "title": "Modelo Groq (texto)",
+            "type": "string",
+            "description": "Modelo de chat do Groq usado para seleção e reescrita.",
+            "editor": "textfield",
+            "default": "llama-3.3-70b-versatile"
+        },
+        "titleStyle": {
+            "title": "Estilo do título reescrito",
+            "type": "string",
+            "description": "Como a IA deve criar o título da matéria republicada.",
+            "editor": "select",
+            "default": "portal",
+            "enum": ["portal", "faithful"],
+            "enumTitles": ["Chamativo, estilo portal", "Fiel ao original"]
+        },
+        "enableImage": {
+            "title": "Gerar imagem com IA",
+            "type": "boolean",
+            "description": "Quando ligado, gera uma imagem editorial para cada notícia republicada usando o provedor escolhido abaixo.",
+            "default": true,
+            "groupCaption": "Imagem da notícia (IA)",
+            "groupDescription": "Geração da foto que ilustra cada matéria republicada."
+        },
+        "imageProvider": {
+            "title": "Provedor de imagem",
+            "type": "string",
+            "description": "Qual IA usar para gerar a imagem. 'gemini' = Google Gemini 2.5 Flash Image (alta qualidade, exige Gemini API key). 'pollinations' = grátis e sem chave (fallback de teste).",
+            "editor": "select",
+            "default": "gemini",
+            "enum": ["gemini", "pollinations"],
+            "enumTitles": ["Google Gemini 2.5 Flash Image", "Pollinations (grátis, sem chave)"]
+        },
+        "geminiApiKey": {
+            "title": "Gemini API key",
+            "type": "string",
+            "description": "Sua chave do Google AI Studio (https://aistudio.google.com/apikey) — necessária quando o provedor de imagem é 'gemini'. Também pode vir da variável de ambiente GEMINI_API_KEY.",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "geminiImageModel": {
+            "title": "Modelo Gemini (imagem)",
+            "type": "string",
+            "description": "Modelo de geração de imagem do Gemini.",
+            "editor": "textfield",
+            "default": "gemini-2.5-flash-image"
+        }
+    },
+    "required": ["searchQuery"]
+}

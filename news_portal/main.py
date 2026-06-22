@@ -1,0 +1,222 @@
+"""Main entry point and orchestrator for the News Portal Rewriter Actor.
+
+Pipeline:
+1. Discover news articles on Google for the search term.
+2. Extract the full body of each candidate (infallible content crawler).
+3. A Groq AI selects the best N articles.
+4. A Groq AI rewrites each selected article for original republication.
+5. (Optional) Generate an editorial image per article (Gemini, or free Pollinations).
+6. Push one republished item per article to the dataset.
+
+Every stage degrades gracefully: a failure in extraction, selection, rewriting,
+or image generation is logged and the run continues with whatever succeeded.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import os
+
+import httpx
+from apify import Actor, Event
+
+from . import ai_groq, discovery, extraction, image_gen
+
+
+async def _kvs_public_url(store: object, key: str) -> str | None:
+    """Best-effort public URL for a key in a key-value store (dict/object/SDK)."""
+    getter = getattr(store, 'get_public_url', None)
+    if getter is not None:
+        try:
+            value = getter(key)
+            if inspect.isawaitable(value):
+                value = await value
+            if value:
+                return value
+        except Exception:  # noqa: BLE001 - fall back to manual construction
+            pass
+    store_id = getattr(store, 'id', None) or getattr(store, '_id', None)
+    if store_id:
+        return f'https://api.apify.com/v2/key-value-stores/{store_id}/records/{key}'
+    return None
+
+
+async def _maybe_generate_image(
+    client: httpx.AsyncClient,
+    store: object,
+    *,
+    index: int,
+    provider: str,
+    api_key: str,
+    model: str,
+    title: str,
+    lead: str,
+) -> dict:
+    """Generate, store, and return image info for one article (best-effort)."""
+    prompt = image_gen.build_prompt(title, lead)
+    try:
+        result = await image_gen.generate_image(
+            client, provider=provider, api_key=api_key, model=model, prompt=prompt
+        )
+    except Exception as exc:  # noqa: BLE001 - image is best-effort
+        Actor.log.warning(f'Image generation failed for article #{index}: {exc}')
+        return {'imageUrl': None, 'imagePrompt': prompt, 'imageError': str(exc)}
+
+    if result is None:
+        return {'imageUrl': None, 'imagePrompt': prompt}
+
+    image_bytes, content_type = result
+    extension = 'png' if 'png' in content_type else 'jpg'
+    key = f'image-{index}.{extension}'
+    try:
+        await store.set_value(key, image_bytes, content_type=content_type)
+        image_url = await _kvs_public_url(store, key)
+    except Exception as exc:  # noqa: BLE001
+        Actor.log.warning(f'Storing image for article #{index} failed: {exc}')
+        return {'imageUrl': None, 'imagePrompt': prompt, 'imageError': str(exc)}
+
+    return {'imageUrl': image_url, 'imageKey': key, 'imagePrompt': prompt}
+
+
+def _lead(body: str) -> str:
+    """First paragraph (or first chunk) of a body, for the image prompt."""
+    first = next((p.strip() for p in (body or '').split('\n') if p.strip()), '')
+    return first[:300]
+
+
+async def main() -> None:
+    async with Actor:
+        # Graceful abort - stop quickly when the user/platform stops the Actor.
+        async def on_aborting() -> None:
+            await asyncio.sleep(1)
+            await Actor.exit()
+
+        Actor.on(Event.ABORTING, on_aborting)
+
+        # --- Input ---------------------------------------------------------------
+        actor_input = await Actor.get_input() or {}
+        search_query = (actor_input.get('searchQuery') or '').strip()
+        max_articles = int(actor_input.get('maxArticles') or 10)
+        num_to_select = int(actor_input.get('numToSelect') or 5)
+        country_code = (actor_input.get('countryCode') or 'br').strip().lower()
+        groq_api_key = (actor_input.get('groqApiKey') or os.environ.get('GROQ_API_KEY') or '').strip()
+        groq_model = (actor_input.get('groqModel') or ai_groq.DEFAULT_MODEL).strip()
+        title_style = (actor_input.get('titleStyle') or 'portal').strip().lower()
+        enable_image = bool(actor_input.get('enableImage', True))
+        image_provider = (actor_input.get('imageProvider') or 'gemini').strip().lower()
+        gemini_api_key = (actor_input.get('geminiApiKey') or os.environ.get('GEMINI_API_KEY') or '').strip()
+        gemini_model = (actor_input.get('geminiImageModel') or 'gemini-2.5-flash-image').strip()
+
+        if not search_query:
+            raise ValueError('Input "searchQuery" is required, e.g. "taxas de logística".')
+        if max_articles <= 0:
+            raise ValueError('Input "maxArticles" must be a positive integer.')
+        if num_to_select <= 0:
+            raise ValueError('Input "numToSelect" must be a positive integer.')
+        if not groq_api_key:
+            raise ValueError(
+                'A Groq API key is required (input "groqApiKey" or env GROQ_API_KEY) '
+                'to select and rewrite the articles. Get a free key at https://console.groq.com.'
+            )
+        if enable_image and image_provider == 'gemini' and not gemini_api_key:
+            Actor.log.warning(
+                'Image generation is ON with provider "gemini" but no Gemini API key was '
+                'provided. Falling back to the free "pollinations" provider.'
+            )
+            image_provider = 'pollinations'
+
+        # --- 1. Discover ----------------------------------------------------------
+        articles = await discovery.search_news(search_query, max_articles, country_code)
+        if not articles:
+            Actor.log.warning('No news articles found for this term. Try a broader or different query.')
+            return
+
+        # --- 2. Extract full bodies (infallible content crawler) ------------------
+        try:
+            bodies = await extraction.fetch_bodies([a['url'] for a in articles])
+        except Exception as exc:  # noqa: BLE001 - degrade: continue with snippets
+            Actor.log.warning(f'Body extraction failed ({exc}); falling back to search snippets.')
+            bodies = {}
+
+        enriched: list[dict] = []
+        for art in articles:
+            body = bodies.get(art['url']) or art.get('snippet') or ''
+            if not body.strip():
+                continue
+            enriched.append({**art, 'body': body})
+
+        if not enriched:
+            Actor.log.warning('Could not extract usable text from any article.')
+            return
+        Actor.log.info(f'{len(enriched)} articles have usable text for selection.')
+
+        # --- 3 + 4 + 5. Select, rewrite, illustrate -------------------------------
+        store = await Actor.open_key_value_store()
+        async with httpx.AsyncClient() as client:
+            # Select the best N.
+            try:
+                picks = await ai_groq.select_best(
+                    client, groq_api_key, groq_model, enriched, num_to_select
+                )
+            except Exception as exc:  # noqa: BLE001 - degrade: take first N in order
+                Actor.log.warning(f'AI selection failed ({exc}); taking the first {num_to_select} articles.')
+                picks = [{'index': i, 'score': 0, 'reason': 'Seleção por ordem (IA indisponível).'}
+                         for i in range(min(num_to_select, len(enriched)))]
+
+            Actor.log.info(f'Selected {len(picks)} articles to rewrite and publish.')
+
+            published = 0
+            for position, pick in enumerate(picks):
+                art = enriched[pick['index']]
+
+                # Rewrite.
+                try:
+                    rewritten = await ai_groq.rewrite_article(
+                        client, groq_api_key, groq_model,
+                        title=art['title'], body=art['body'], title_style=title_style,
+                    )
+                except Exception as exc:  # noqa: BLE001 - skip this article on hard failure
+                    Actor.log.warning(f'Rewrite failed for "{art["title"]}": {exc}')
+                    continue
+                if not rewritten['body']:
+                    Actor.log.warning(f'Rewrite returned empty body for "{art["title"]}"; skipping.')
+                    continue
+
+                # Illustrate (optional).
+                image_info = {'imageUrl': None, 'imagePrompt': None}
+                if enable_image:
+                    image_info = await _maybe_generate_image(
+                        client, store,
+                        index=position,
+                        provider=image_provider,
+                        api_key=gemini_api_key if image_provider == 'gemini' else '',
+                        model=gemini_model,
+                        title=rewritten['title'],
+                        lead=_lead(rewritten['body']),
+                    )
+
+                await Actor.push_data(
+                    {
+                        'searchQuery': search_query,
+                        'originalTitle': art['title'],
+                        'originalUrl': art['url'],
+                        'source': art.get('source'),
+                        'publishedAt': art.get('date'),
+                        'originalBody': art['body'],
+                        'rewrittenTitle': rewritten['title'],
+                        'rewrittenBody': rewritten['body'],
+                        'score': pick.get('score'),
+                        'selectionReason': pick.get('reason'),
+                        **image_info,
+                    }
+                )
+                published += 1
+
+        Actor.log.info(
+            f'Done. Searched "{search_query}", evaluated {len(enriched)} articles, '
+            f'published {published} rewritten article(s)'
+            + (' with AI images.' if enable_image else '.')
+        )
+        if published == 0:
+            Actor.log.warning('Nothing was published. Check the Groq API key and the search term.')

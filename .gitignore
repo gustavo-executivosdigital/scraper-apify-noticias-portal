@@ -1,0 +1,16 @@
+# Apify local storage (not synced to the Cloud)
+storage/
+apify_storage/
+.apify/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

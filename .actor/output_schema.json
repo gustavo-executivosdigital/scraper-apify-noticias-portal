@@ -1,0 +1,17 @@
+{
+    "$schema": "https://apify.com/schemas/v1/output.ide.json",
+    "actorOutputSchemaVersion": 1,
+    "title": "Output schema",
+    "properties": {
+        "results": {
+            "type": "string",
+            "title": "Notícias republicadas",
+            "template": "{{links.apiDefaultDatasetUrl}}/items"
+        },
+        "images": {
+            "type": "string",
+            "title": "Imagens geradas",
+            "template": "{{links.apiDefaultKeyValueStoreUrl}}/keys"
+        }
+    }
+}
