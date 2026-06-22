@@ -1,12 +1,18 @@
-"""News discovery via the official ``apify/google-search-scraper`` Actor.
+"""News discovery.
 
-We ask Google for the user's term and collect the organic results, which for a
-news term are overwhelmingly news articles. We return lightweight references
-(title, url, source, snippet); the full article body is fetched later by
-``extraction.py``.
+Primary source: the ``fabri-lab/apify-google-news-scraper`` Actor, which queries
+**Google News** (not generic web search). Google News is news-native: results come
+ranked by relevance and can be restricted by recency (``timePeriod``), so we get the
+most relevant *recent* coverage of the term — exactly what a news portal wants. With
+``extractFullText`` the Actor also returns the article body, which we carry through so
+the rewrite step has real content even when our own extractor can't reach the page.
 
-Discovery is best-effort: any failure is raised to the caller, which logs it and
-decides how to proceed.
+Fallback: if the Google News Actor fails or returns nothing, we transparently fall
+back to the original ``apify/google-search-scraper`` (generic Google organic results),
+so a run never breaks because of the discovery source.
+
+Both paths return the same lightweight reference shape:
+``{title, url, source, snippet, date, body?}``.
 """
 
 from __future__ import annotations
@@ -16,13 +22,24 @@ from urllib.parse import urlparse
 
 from apify import Actor
 
+# Primary: Google News (relevance + recency, pt-BR/BR aware, optional full text).
+GOOGLE_NEWS_ACTOR = 'fabri-lab/apify-google-news-scraper'
+# Fallback: generic Google organic search (the original source).
 GOOGLE_SEARCH_ACTOR = 'apify/google-search-scraper'
 
-# Map our country code to the search Actor's allowed `languageCode` values.
-# The Actor rejects bare "pt" - it only accepts "pt-BR"/"pt-PT" (and "en", etc.).
+# Default recency window for Google News. "1d" = last 24h, so we naturally surface the
+# day's most relevant stories and barely ever re-see something from a previous run.
+DEFAULT_RECENCY = '1d'
+
+# Map our country code to the Google News Actor's (googleCountry, uiLanguage). Its enums
+# have no Portugal option, so "pt" uses Brazilian context as the closest match.
+_NEWS_LOCALE = {'br': ('BR', 'pt'), 'pt': ('BR', 'pt'), 'us': ('US', 'en')}
+
+# Map our country code to the (fallback) search Actor's allowed `languageCode` values.
+# That Actor rejects bare "pt" - it only accepts "pt-BR"/"pt-PT" (and "en", etc.).
 _LANGUAGE_BY_COUNTRY = {'br': 'pt-BR', 'pt': 'pt-PT', 'us': 'en'}
 
-# Domains that are not actual news articles - we skip them as candidates.
+# Domains that are not actual news articles - we skip them as candidates (fallback path).
 _SKIP_HOSTS = (
     'google.com',
     'youtube.com',
@@ -54,12 +71,92 @@ def _is_article(url: str) -> bool:
     return len(path) > 1
 
 
-async def search_news(query: str, max_articles: int, country_code: str) -> list[dict]:
+async def search_news(
+    query: str,
+    max_articles: int,
+    country_code: str,
+    recency: str = DEFAULT_RECENCY,
+) -> list[dict]:
     """Return up to ``max_articles`` candidate news references for ``query``.
 
-    Each item: ``{title, url, source, snippet}``. Raises on a hard failure of the
-    search Actor so the caller can surface a clear error.
+    Tries Google News first (relevance + ``recency`` window); on any failure or empty
+    result, falls back to generic Google organic search. Each item:
+    ``{title, url, source, snippet, date, body?}``.
     """
+    try:
+        articles = await _search_google_news(query, max_articles, country_code, recency)
+        if articles:
+            Actor.log.info(
+                f'Discovery (Google News, recência={recency}) encontrou {len(articles)} '
+                f'candidato(s) ordenados por relevância.'
+            )
+            return articles
+        Actor.log.warning('Google News não retornou candidatos; usando fallback (busca orgânica).')
+    except Exception as exc:  # noqa: BLE001 - degrade to the original source
+        Actor.log.warning(f'Actor de Google News falhou ({exc}); usando fallback (busca orgânica).')
+
+    return await _search_google_organic(query, max_articles, country_code)
+
+
+async def _search_google_news(
+    query: str, max_articles: int, country_code: str, recency: str
+) -> list[dict]:
+    """Discover via the Google News Actor: relevance-ranked, recency-filtered."""
+    google_country, ui_language = _NEWS_LOCALE.get(country_code, ('US', 'en'))
+    run_input = {
+        'searchQuery': query,
+        'googleCountry': google_country,
+        'uiLanguage': ui_language,
+        # Recency window ("1d" = last 24h). Google News default order is by relevance,
+        # so within the window we get the most relevant (most covered) stories first.
+        'timePeriod': recency or DEFAULT_RECENCY,
+        'maxItems': min(max(max_articles, 1), 1000),
+        # Pull the article body too, so the rewrite has real content regardless of
+        # whether our own extractor can reach the (often redirected) publisher URL.
+        'extractFullText': True,
+        # Let Google drop near-duplicate / omitted results.
+        'filter': True,
+    }
+    Actor.log.info(
+        f'Buscando notícias de "{query}" via {GOOGLE_NEWS_ACTOR} '
+        f'(país={google_country}, idioma={ui_language}, recência={run_input["timePeriod"]})...'
+    )
+    run = await Actor.call(GOOGLE_NEWS_ACTOR, run_input=run_input)
+
+    dataset_id = _dataset_id(run)
+    if dataset_id is None:
+        raise RuntimeError(f'{GOOGLE_NEWS_ACTOR} não retornou um dataset.')
+
+    seen: set[str] = set()
+    articles: list[dict] = []
+    dataset = await Actor.open_dataset(id=dataset_id)
+    async for item in dataset.iterate_items():
+        url = (item.get('link') or item.get('url') or '').strip()
+        title = (item.get('title') or '').strip()
+        if not url or not url.startswith('http') or not title or url in seen:
+            continue
+        seen.add(url)
+        full_text = (item.get('fullText') or '').strip()
+        article = {
+            'title': title,
+            'url': url,
+            'source': (item.get('source') or _host(url)).strip(),
+            'snippet': (item.get('snippet') or item.get('description') or '').strip(),
+            'date': (item.get('date') or item.get('publishedAt') or '').strip() or None,
+        }
+        # Carry the body only when the Actor actually extracted it; the orchestrator
+        # prefers it and only falls back to its own extractor when it is missing.
+        if full_text:
+            article['body'] = full_text
+        articles.append(article)
+        if len(articles) >= max_articles:
+            break
+
+    return articles
+
+
+async def _search_google_organic(query: str, max_articles: int, country_code: str) -> list[dict]:
+    """Fallback: the original generic Google organic search via the search Actor."""
     # Pull a few extra results because some will be filtered out as non-articles.
     results_per_page = min(max(max_articles * 2, 10), 100)
     search_input = {
@@ -70,7 +167,7 @@ async def search_news(query: str, max_articles: int, country_code: str) -> list[
         'languageCode': _LANGUAGE_BY_COUNTRY.get(country_code, 'en'),
         'mobileResults': False,
     }
-    Actor.log.info(f'Searching Google news for "{query}" via {GOOGLE_SEARCH_ACTOR}...')
+    Actor.log.info(f'Fallback: buscando "{query}" via {GOOGLE_SEARCH_ACTOR}...')
     run = await Actor.call(GOOGLE_SEARCH_ACTOR, run_input=search_input)
 
     dataset_id = _dataset_id(run)
@@ -102,7 +199,7 @@ async def search_news(query: str, max_articles: int, country_code: str) -> list[
         if len(articles) >= max_articles:
             break
 
-    Actor.log.info(f'Discovery found {len(articles)} candidate news articles.')
+    Actor.log.info(f'Discovery (fallback) found {len(articles)} candidate news articles.')
     return articles
 
 

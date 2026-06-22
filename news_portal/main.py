@@ -113,6 +113,9 @@ async def main() -> None:
         groq_api_key = (actor_input.get('groqApiKey') or os.environ.get('GROQ_API_KEY') or '').strip()
         groq_model = (actor_input.get('groqModel') or ai_groq.DEFAULT_MODEL).strip()
         title_style = (actor_input.get('titleStyle') or 'portal').strip().lower()
+        # Recency window for Google News discovery ("1d" = last 24h). Optional and
+        # internal: defaults to 1 day so we surface the day's most relevant stories.
+        recency = (actor_input.get('timePeriod') or discovery.DEFAULT_RECENCY).strip()
         enable_image = bool(actor_input.get('enableImage', True))
         openrouter_api_key = (actor_input.get('openRouterApiKey') or os.environ.get('OPENROUTER_API_KEY') or '').strip()
         image_model = (actor_input.get('imageModel') or image_gen.DEFAULT_IMAGE_MODEL).strip()
@@ -143,7 +146,7 @@ async def main() -> None:
         # reduzem muito o conjunto. Buscamos ~4x o desejado (mantendo ``maxArticles`` como
         # piso), de forma 100% interna: a interface de entrada/saída do Actor não muda.
         candidate_pool = min(max(max_articles, num_to_select * 4), 50)
-        articles = await discovery.search_news(search_query, candidate_pool, country_code)
+        articles = await discovery.search_news(search_query, candidate_pool, country_code, recency)
         Actor.log.info(
             f'Funil: alvo de {num_to_select} notícia(s) distintas; buscando pool de até '
             f'{candidate_pool} candidatos.'
@@ -153,15 +156,20 @@ async def main() -> None:
             return
 
         # --- 2. Extract full bodies (infallible content crawler) ------------------
-        try:
-            bodies = await extraction.fetch_bodies([a['url'] for a in articles])
-        except Exception as exc:  # noqa: BLE001 - degrade: continue with snippets
-            Actor.log.warning(f'Body extraction failed ({exc}); falling back to search snippets.')
-            bodies = {}
+        # Google News discovery may already carry the article body (``extractFullText``).
+        # Only crawl the ones still missing a body, to save time and Compute Units.
+        urls_needing_body = [a['url'] for a in articles if not (a.get('body') or '').strip()]
+        bodies: dict = {}
+        if urls_needing_body:
+            try:
+                bodies = await extraction.fetch_bodies(urls_needing_body)
+            except Exception as exc:  # noqa: BLE001 - degrade: continue with snippets
+                Actor.log.warning(f'Body extraction failed ({exc}); falling back to search snippets.')
+                bodies = {}
 
         enriched: list[dict] = []
         for art in articles:
-            body = bodies.get(art['url']) or art.get('snippet') or ''
+            body = (art.get('body') or '').strip() or bodies.get(art['url']) or art.get('snippet') or ''
             if not body.strip():
                 continue
             enriched.append({**art, 'body': body})
