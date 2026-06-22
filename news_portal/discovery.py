@@ -18,6 +18,10 @@ from apify import Actor
 
 GOOGLE_SEARCH_ACTOR = 'apify/google-search-scraper'
 
+# Map our country code to the search Actor's allowed `languageCode` values.
+# The Actor rejects bare "pt" - it only accepts "pt-BR"/"pt-PT" (and "en", etc.).
+_LANGUAGE_BY_COUNTRY = {'br': 'pt-BR', 'pt': 'pt-PT', 'us': 'en'}
+
 # Domains that are not actual news articles - we skip them as candidates.
 _SKIP_HOSTS = (
     'google.com',
@@ -63,7 +67,7 @@ async def search_news(query: str, max_articles: int, country_code: str) -> list[
         'resultsPerPage': results_per_page,
         'maxPagesPerQuery': 1,
         'countryCode': country_code,
-        'languageCode': 'pt' if country_code in ('br', 'pt') else 'en',
+        'languageCode': _LANGUAGE_BY_COUNTRY.get(country_code, 'en'),
         'mobileResults': False,
     }
     Actor.log.info(f'Searching Google news for "{query}" via {GOOGLE_SEARCH_ACTOR}...')
