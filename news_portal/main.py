@@ -21,7 +21,7 @@ import os
 import httpx
 from apify import Actor, Event
 
-from . import ai_groq, discovery, extraction, image_gen
+from . import ai_groq, dedup, discovery, extraction, image_gen
 
 
 async def _kvs_public_url(store: object, key: str) -> str | None:
@@ -161,6 +161,17 @@ async def main() -> None:
             return
         Actor.log.info(f'{len(enriched)} articles have usable text for selection.')
 
+        # --- 2b. Dedup: nunca pegar notícia repetida ------------------------------
+        # Collapse same-story duplicates from different sources in THIS run, then drop
+        # anything we already published in a PREVIOUS run (persistent history). Both
+        # steps are best-effort and never block publishing on their own failure.
+        enriched = dedup.collapse_in_run(enriched)
+        history = await dedup.load_history()
+        enriched = dedup.drop_already_published(enriched, history)
+        if not enriched:
+            Actor.log.warning('Todas as notícias encontradas já foram publicadas antes ou eram duplicatas. Nada novo a publicar.')
+            return
+
         # --- 3 + 4 + 5. Select, rewrite, illustrate -------------------------------
         store = await Actor.open_key_value_store()
         async with httpx.AsyncClient() as client:
@@ -227,6 +238,12 @@ async def main() -> None:
                     }
                 )
                 published += 1
+                # Remember this story so future runs never republish it.
+                dedup.mark(history, art['url'], art['title'])
+
+            # Persist the updated history once, after the run (best-effort).
+            if published:
+                await dedup.save_history(history)
 
         Actor.log.info(
             f'Done. Searched "{search_query}", evaluated {len(enriched)} articles, '

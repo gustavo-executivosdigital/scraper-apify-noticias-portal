@@ -25,26 +25,44 @@ _DATA_URL_RE = re.compile(r'^data:(?P<mime>[^;,]+)?(?:;base64)?,(?P<data>.+)$', 
 
 
 def build_prompt(title: str, lead: str) -> str:
-    """Build a high-quality, news-coherent image prompt that contains NO text.
+    """Build a hyper-realistic, news-coherent image prompt that contains NO text.
 
-    The prompt describes a realistic editorial photograph that matches the story,
-    and explicitly forbids any letters, words, captions, logos, or watermarks so
-    the generated image is clean and reusable.
+    The prompt describes an authentic, un-staged photojournalistic image that
+    matches the story. It is engineered to look like a real photograph shot by a
+    press photographer — NOT like an AI render — by specifying real camera gear,
+    natural light, documentary framing and physical imperfections, and by
+    explicitly banning the "AI look" (plastic skin, over-smoothing, HDR glow,
+    3D/CGI/illustration). It also forbids any letters, words, captions, logos or
+    watermarks so the image is clean and reusable.
     """
     summary = ' '.join(f'{title}. {lead}'.split())[:600]
     return (
-        'Create a high-quality, photorealistic editorial news photograph that '
-        f'accurately and coherently illustrates this news story: "{summary}". '
+        'A real, authentic press photograph documenting this Brazilian news story: '
+        f'"{summary}". '
+        'It must look like a genuine photo captured on assignment by a professional '
+        'photojournalist for a newspaper — a real moment, candid and un-staged, NOT a '
+        'concept render. '
         'This is for a Brazilian LOGISTICS news portal, so when the story allows, ground the '
-        'scene in the logistics world: trucks, highways, ports, container terminals, cargo ships, '
-        'warehouses, distribution centers, forklifts, pallets or supply-chain operations. '
-        'Style: professional photojournalism, realistic natural lighting, sharp focus, '
-        'rich detail, depth of field, 16:9 horizontal composition, suitable as the '
-        'lead image of a news article. '
+        'scene in the real logistics world of Brazil: diesel trucks on a BR highway, port and '
+        'container terminals, cargo ships, distribution warehouses, forklifts and pallets, '
+        'loading docks, supply-chain and freight operations, with believable Brazilian '
+        'environment, vehicles and workwear. '
+        'Technical look: shot on a full-frame DSLR (Canon EOS R5 / Nikon) with a 35mm or 50mm '
+        'prime lens, natural available light, true-to-life and slightly imperfect exposure, '
+        'realistic shallow depth of field with natural background blur (bokeh), authentic color '
+        'grading (not over-saturated), fine natural sensor grain, real-world textures — worn '
+        'metal, dust, scratches, asphalt, weathered surfaces and fabric. '
+        '35mm reportage / documentary photography aesthetic, 16:9 horizontal composition, '
+        'suitable as the lead image of a news article. '
+        'CRITICAL — it must NOT look AI-generated: no plastic or waxy skin, no airbrushed or '
+        'over-smoothed surfaces, no glossy CGI sheen, no exaggerated HDR glow, no unrealistic '
+        'symmetry, no over-perfect lighting, no 3D render, no illustration, no digital painting, '
+        'no cartoon, no concept art. Keep human faces, hands and proportions anatomically '
+        'correct and natural; no distorted hands, no warped or deformed objects, no surreal '
+        'artifacts, no extra limbs or fingers. '
         'Absolutely NO text of any kind in the image: no words, no letters, no numbers, '
         'no captions, no headlines, no signs with readable text, no logos, no watermarks, '
         'no UI overlays. Do not depict real identifiable public figures. '
-        'No distorted hands, no warped or deformed objects, no surreal artifacts. '
         'The image must be tasteful, neutral, and safe for a general news audience.'
     )
 

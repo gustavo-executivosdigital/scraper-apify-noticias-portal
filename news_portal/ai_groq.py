@@ -99,10 +99,10 @@ async def select_best(
     """Pick up to ``n`` best articles. Returns each as ``{index, score, reason}``.
 
     ``index`` is the position in the input ``articles`` list. The editor AI is
-    trusted to return FEWER than ``n`` when the remaining articles are weak or
-    off-topic (a quality floor) — we do not pad to ``n`` with junk. Only if the AI
-    returns nothing usable do we fall back to the first article, so a run still
-    has something to publish.
+    trusted to return FEWER than ``n`` — or an empty list — when the remaining
+    articles are weak, off-topic, superficial or duplicated (a quality floor). We
+    do not pad to ``n`` with junk and we do not fall back to an arbitrary article:
+    publishing nothing is preferable to republishing unimportant content.
     """
     catalog = []
     for i, art in enumerate(articles):
@@ -117,22 +117,37 @@ async def select_best(
     system = (
         'Você é o editor-chefe de um portal brasileiro ESPECIALIZADO EM LOGÍSTICA (transporte, '
         'frete, cadeia de suprimentos, comércio exterior, rodovias/portos, armazenagem, última '
-        'milha, infraestrutura e regulação do setor). Avalie os artigos e selecione apenas os que '
-        'realmente interessam a esse público, priorizando relevância para o setor de logística, '
-        'atualidade, clareza e credibilidade da fonte. '
-        'Penalize fortemente (score baixo) o que fugir do tema de logística, for opinião/publicidade '
-        'ou de fonte fraca. NÃO selecione a mesma notícia repetida em fontes diferentes — escolha a '
-        'melhor versão e descarte as duplicatas. É melhor selecionar MENOS artigos do que incluir '
-        'material fraco ou fora do tema. Responda SOMENTE em JSON.'
+        'milha, infraestrutura e regulação do setor). Avalie CADA artigo INDIVIDUALMENTE e selecione '
+        'apenas NOTÍCIAS REAIS E IMPORTANTES para esse público.\n\n'
+        'SÓ É IMPORTANTE (score alto) conteúdo factual e noticioso, como: fatos e acontecimentos '
+        'concretos, novas leis/regulamentos/normas (ANTT, ANTAQ, Receita, Anvisa, etc.), greves e '
+        'paralisações, decisões de governo, mudanças de tarifas/fretes/combustível/pedágio, dados e '
+        'estatísticas oficiais do setor, acordos comerciais e comércio exterior, fusões/aquisições e '
+        'investimentos de empresas, obras e infraestrutura (rodovias, portos, ferrovias, aeroportos), '
+        'acidentes/incidentes relevantes, e movimentos econômicos do mercado de logística.\n\n'
+        'NÃO É IMPORTANTE (score baixo, NÃO selecione): conteúdo superficial ou atemporal, como listas '
+        'de "dicas"/"X passos"/"X maneiras"/"melhores práticas", tutoriais e how-to, guias genéricos, '
+        'colunas de opinião, publicidade/publieditorial/conteúdo patrocinado, releases promocionais de '
+        'produto, matérias institucionais de autopromoção, motivacional, e qualquer coisa fora do tema '
+        'de logística ou de fonte fraca/duvidosa.\n\n'
+        'DEDUPLICAÇÃO: se a MESMA notícia (mesmo fato/acontecimento) aparecer em fontes diferentes ou '
+        'com títulos parecidos, selecione APENAS a melhor versão (fonte mais forte e texto mais '
+        'completo) e descarte TODAS as outras. Nunca selecione dois artigos que cobrem o mesmo fato.\n\n'
+        'É MUITO melhor selecionar MENOS artigos (ou nenhum) do que incluir material fraco, repetido, '
+        'superficial ou fora do tema. Responda SOMENTE em JSON.'
     )
     user = (
-        f'Selecione até {n} dos MELHORES artigos da lista abaixo para um portal de logística.\n\n'
+        f'Avalie individualmente os artigos abaixo e selecione no máximo {n} que sejam NOTÍCIAS REAIS '
+        'E IMPORTANTES de logística para um portal. Descarte dicas/listas/tutoriais/opinião/'
+        'publicidade e descarte duplicatas do mesmo fato.\n\n'
         + '\n\n'.join(catalog)
         + '\n\nResponda no formato JSON exato:\n'
-        '{"selected": [{"index": <int>, "score": <0-100>, "reason": "<motivo curto em pt-BR>"}]}\n'
+        '{"selected": [{"index": <int>, "score": <0-100>, "reason": "<motivo curto em pt-BR explicando '
+        'por que é uma notícia importante>"}]}\n'
         f'A lista "selected" deve ter no máximo {n} itens, ordenados do melhor para o pior. '
-        'Inclua apenas artigos com score >= 50; se houver menos que isso, retorne menos itens. '
-        'Não inclua duplicatas da mesma notícia.'
+        'Inclua APENAS artigos com score >= 60 (notícia realmente importante); se houver menos que isso, '
+        'retorne menos itens — ou uma lista vazia se nenhum prestar. NUNCA inclua duplicatas do mesmo fato '
+        'nem conteúdo superficial.'
     )
 
     content = await _chat(
@@ -163,13 +178,11 @@ async def select_best(
         if len(picks) >= n:
             break
 
-    # Quality floor: we trust the editor AI to return fewer than n when the rest is
-    # weak or off-topic — we do NOT pad with junk just to reach n. Only as a last
-    # resort, if the AI returned nothing usable, fall back to the first article so
-    # the run still produces something to publish.
-    if not picks and articles:
-        picks.append({'index': 0, 'score': 0, 'reason': 'Seleção por ordem (IA não retornou candidatos).'})
-
+    # Quality floor: we trust the editor AI to return fewer than n — or NOTHING — when
+    # the candidates are weak, off-topic, superficial or duplicated. We do NOT pad with
+    # junk just to publish something: it is better to publish nothing this run than to
+    # republish an unimportant/listicle article. An empty result is a valid, intended
+    # outcome and the orchestrator handles it gracefully.
     return picks
 
 
