@@ -96,11 +96,13 @@ async def select_best(
     articles: list[dict],
     n: int,
 ) -> list[dict]:
-    """Pick the best ``n`` articles. Returns each as ``{index, score, reason}``.
+    """Pick up to ``n`` best articles. Returns each as ``{index, score, reason}``.
 
-    ``index`` is the position in the input ``articles`` list. If the AI returns
-    fewer than ``n`` usable picks, we top up with the remaining articles in order
-    so the pipeline always has something to publish.
+    ``index`` is the position in the input ``articles`` list. The editor AI is
+    trusted to return FEWER than ``n`` when the remaining articles are weak or
+    off-topic (a quality floor) — we do not pad to ``n`` with junk. Only if the AI
+    returns nothing usable do we fall back to the first article, so a run still
+    has something to publish.
     """
     catalog = []
     for i, art in enumerate(articles):
@@ -113,16 +115,24 @@ async def select_best(
         )
 
     system = (
-        'Você é um editor-chefe de um portal de notícias brasileiro. Avalie a lista de artigos '
-        'e selecione os melhores para republicação, priorizando relevância, atualidade, clareza '
-        'e potencial de interesse do público. Responda SOMENTE em JSON.'
+        'Você é o editor-chefe de um portal brasileiro ESPECIALIZADO EM LOGÍSTICA (transporte, '
+        'frete, cadeia de suprimentos, comércio exterior, rodovias/portos, armazenagem, última '
+        'milha, infraestrutura e regulação do setor). Avalie os artigos e selecione apenas os que '
+        'realmente interessam a esse público, priorizando relevância para o setor de logística, '
+        'atualidade, clareza e credibilidade da fonte. '
+        'Penalize fortemente (score baixo) o que fugir do tema de logística, for opinião/publicidade '
+        'ou de fonte fraca. NÃO selecione a mesma notícia repetida em fontes diferentes — escolha a '
+        'melhor versão e descarte as duplicatas. É melhor selecionar MENOS artigos do que incluir '
+        'material fraco ou fora do tema. Responda SOMENTE em JSON.'
     )
     user = (
-        f'Selecione os {n} MELHORES artigos da lista abaixo.\n\n'
+        f'Selecione até {n} dos MELHORES artigos da lista abaixo para um portal de logística.\n\n'
         + '\n\n'.join(catalog)
         + '\n\nResponda no formato JSON exato:\n'
         '{"selected": [{"index": <int>, "score": <0-100>, "reason": "<motivo curto em pt-BR>"}]}\n'
-        f'A lista "selected" deve ter no máximo {n} itens, ordenados do melhor para o pior.'
+        f'A lista "selected" deve ter no máximo {n} itens, ordenados do melhor para o pior. '
+        'Inclua apenas artigos com score >= 50; se houver menos que isso, retorne menos itens. '
+        'Não inclua duplicatas da mesma notícia.'
     )
 
     content = await _chat(
@@ -153,13 +163,12 @@ async def select_best(
         if len(picks) >= n:
             break
 
-    # Top up if the AI returned too few, so we still publish n when possible.
-    for idx in range(len(articles)):
-        if len(picks) >= n:
-            break
-        if idx not in used:
-            used.add(idx)
-            picks.append({'index': idx, 'score': 0, 'reason': 'Completado pela ordem de relevância.'})
+    # Quality floor: we trust the editor AI to return fewer than n when the rest is
+    # weak or off-topic — we do NOT pad with junk just to reach n. Only as a last
+    # resort, if the AI returned nothing usable, fall back to the first article so
+    # the run still produces something to publish.
+    if not picks and articles:
+        picks.append({'index': 0, 'score': 0, 'reason': 'Seleção por ordem (IA não retornou candidatos).'})
 
     return picks
 
@@ -180,18 +189,32 @@ async def rewrite_article(
         else 'Mantenha o título fiel ao sentido do original, apenas com palavras próprias.'
     )
 
+    original = body[:_MAX_BODY_CHARS_FOR_REWRITE]
+    truncated_note = (
+        '\n\n(OBS: o texto acima pode estar truncado; reescreva apenas com base no que recebeu, '
+        'sem inventar um final.)'
+        if len(body) > _MAX_BODY_CHARS_FOR_REWRITE
+        else ''
+    )
+
     system = (
-        'Você é um jornalista que reescreve matérias para republicação em um portal brasileiro. '
-        'Reescreva com palavras 100% próprias, preservando TODOS os fatos, nomes, números e a '
-        'estrutura jornalística (lide + corpo em parágrafos). NÃO copie frases do original, NÃO '
-        'invente fatos, NÃO adicione opinião. Escreva em português do Brasil. Responda SOMENTE em JSON.'
+        'Você é um jornalista de um portal brasileiro especializado em LOGÍSTICA, transporte, '
+        'frete, cadeia de suprimentos, comércio exterior, rodovias/portos e regulação do setor. '
+        'Reescreva a matéria para republicação com palavras 100% próprias, preservando TODOS os '
+        'fatos, nomes, números e a estrutura jornalística (lide + corpo em parágrafos). Use o '
+        'vocabulário do setor de logística quando couber, mantendo o tom informativo e neutro. '
+        'NÃO copie frases do original, NÃO invente fatos, NÃO adicione opinião. Escreva em '
+        'português do Brasil. Responda SOMENTE em JSON.'
     )
     user = (
         f'{title_instruction}\n\n'
         f'Título original: {title}\n\n'
-        f'Matéria original:\n{body[:_MAX_BODY_CHARS_FOR_REWRITE]}\n\n'
+        f'Matéria original:\n{original}{truncated_note}\n\n'
         'Responda no formato JSON exato:\n'
-        '{"title": "<novo título>", "body": "<matéria reescrita em parágrafos separados por \\n\\n>"}'
+        '{"title": "<novo título>", '
+        '"resumo": "<resumo real da matéria em 1 a 2 frases, no máximo 280 caracteres, sem repetir o título>", '
+        '"tags": ["<3 a 6 termos curtos do tema de logística, em pt-BR e minúsculas>"], '
+        '"body": "<matéria reescrita, 3 a 6 parágrafos separados por \\n\\n>"}'
     )
 
     content = await _chat(
@@ -202,8 +225,23 @@ async def rewrite_article(
     parsed = _safe_json(content) or {}
     if not isinstance(parsed, dict):
         parsed = {}
+
+    raw_tags = parsed.get('tags')
+    tags: list[str] = []
+    if isinstance(raw_tags, list):
+        seen: set[str] = set()
+        for tag in raw_tags:
+            clean = str(tag or '').strip().lower()
+            if clean and clean not in seen:
+                seen.add(clean)
+                tags.append(clean)
+            if len(tags) >= 6:
+                break
+
     return {
         'title': str(parsed.get('title') or title).strip(),
+        'resumo': str(parsed.get('resumo') or '').strip()[:280],
+        'tags': tags,
         'body': str(parsed.get('body') or '').strip(),
     }
 

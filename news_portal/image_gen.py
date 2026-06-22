@@ -35,14 +35,31 @@ def build_prompt(title: str, lead: str) -> str:
     return (
         'Create a high-quality, photorealistic editorial news photograph that '
         f'accurately and coherently illustrates this news story: "{summary}". '
+        'This is for a Brazilian LOGISTICS news portal, so when the story allows, ground the '
+        'scene in the logistics world: trucks, highways, ports, container terminals, cargo ships, '
+        'warehouses, distribution centers, forklifts, pallets or supply-chain operations. '
         'Style: professional photojournalism, realistic natural lighting, sharp focus, '
         'rich detail, depth of field, 16:9 horizontal composition, suitable as the '
         'lead image of a news article. '
         'Absolutely NO text of any kind in the image: no words, no letters, no numbers, '
         'no captions, no headlines, no signs with readable text, no logos, no watermarks, '
         'no UI overlays. Do not depict real identifiable public figures. '
+        'No distorted hands, no warped or deformed objects, no surreal artifacts. '
         'The image must be tasteful, neutral, and safe for a general news audience.'
     )
+
+
+def build_alt(title: str) -> str:
+    """Short, human pt-BR alt text for the generated image (SEO + accessibility).
+
+    The image is generated to illustrate the story, so a concise descriptive alt
+    derived from the headline is accurate and far better than dumping the long
+    English generation prompt into the ``alt`` attribute.
+    """
+    clean = ' '.join((title or '').split()).strip().rstrip('.')
+    if not clean:
+        return 'Imagem ilustrativa de logística'
+    return f'Imagem ilustrativa: {clean}'[:160]
 
 
 async def generate_image(

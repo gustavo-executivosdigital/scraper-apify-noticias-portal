@@ -54,6 +54,7 @@ async def _maybe_generate_image(
 ) -> dict:
     """Generate, store, and return image info for one article (best-effort)."""
     prompt = image_gen.build_prompt(title, lead)
+    alt = image_gen.build_alt(title)
     try:
         result = await image_gen.generate_image(
             client, api_key=api_key, model=model, prompt=prompt
@@ -75,7 +76,17 @@ async def _maybe_generate_image(
         Actor.log.warning(f'Storing image for article #{index} failed: {exc}')
         return {'imageUrl': None, 'imagePrompt': prompt, 'imageError': str(exc)}
 
-    return {'imageUrl': image_url, 'imageKey': key, 'imagePrompt': prompt}
+    # ``imagemAlt`` (pt-BR spelling) is the key the portal reads for alt text; a
+    # short human caption, not the long English generation prompt.
+    return {'imageUrl': image_url, 'imageKey': key, 'imagePrompt': prompt, 'imagemAlt': alt}
+
+
+def _confianca(score: object) -> float | None:
+    """Convert a 0–100 selection score to the portal's 0–1 ``confiancaIA`` scale."""
+    try:
+        return round(max(0, min(100, int(float(score)))) / 100, 2)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _lead(body: str) -> str:
@@ -204,8 +215,14 @@ async def main() -> None:
                         'originalBody': art['body'],
                         'rewrittenTitle': rewritten['title'],
                         'rewrittenBody': rewritten['body'],
+                        # Real AI summary + tags so the portal stops deriving them.
+                        'resumo': rewritten.get('resumo') or None,
+                        'tags': rewritten.get('tags') or [],
                         'score': pick.get('score'),
                         'selectionReason': pick.get('reason'),
+                        # The portal reads ``confiancaIA`` on a 0–1 scale (it ignores
+                        # ``score``, which is 0–100), so normalize it.
+                        'confiancaIA': _confianca(pick.get('score')),
                         **image_info,
                     }
                 )
