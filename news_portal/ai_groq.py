@@ -25,8 +25,36 @@ DEFAULT_MODEL = 'llama-3.3-70b-versatile'
 FALLBACK_MODELS = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'openai/gpt-oss-20b']
 
 # Keep prompts bounded so we stay well inside context limits and control cost.
-_MAX_BODY_CHARS_FOR_SELECTION = 1200
+# Give the selector enough body to judge IMPORTANCE (not just a snippet), but stay
+# bounded for cost. The rewrite gets the most context.
+_MAX_BODY_CHARS_FOR_SELECTION = 2200
 _MAX_BODY_CHARS_FOR_REWRITE = 8000
+
+# Hard quality floor enforced IN CODE (not just requested in the prompt): any article
+# the editor AI scored below this is dropped even if it returned it. The prompt asks
+# for >= 60; we keep the code floor slightly lower (50) so we respect the model's own
+# scoring without fighting minor miscalibration, while still blocking anything the
+# model itself flagged as weak. The goal is "only real, important news" — never junk.
+_MIN_SELECTION_SCORE = 50
+
+# Title patterns that strongly signal superficial/listicle/how-to content (the kind the
+# user explicitly does NOT want). We do NOT auto-drop on these (a headline like "Governo
+# anuncia 5 medidas para os portos" is real news) — we only FLAG them in the catalog so
+# the editor AI penalizes them. The AI makes the final call.
+_SUPERFICIAL_TITLE_RE = re.compile(
+    r'(\b\d+\s+(dicas?|passos?|maneiras?|formas?|motivos?|raz[õo]es|truques?|segredos?|'
+    r'erros?|mitos?|coisas?)\b)'
+    r'|(\bpasso\s+a\s+passo\b)'
+    r'|(\bcomo\s+(fazer|escolher|melhorar|reduzir|economizar|aumentar|montar|criar)\b)'
+    r'|(\b(guia|tutorial)\s+(completo|definitivo|pr[áa]tico|de)\b)'
+    r'|(\bmelhores\s+(dicas|pr[áa]ticas|formas|maneiras)\b)',
+    re.IGNORECASE,
+)
+
+
+def _looks_superficial(title: str) -> bool:
+    """Heuristic flag for listicle/how-to/tips titles (soft signal, not an auto-drop)."""
+    return bool(_SUPERFICIAL_TITLE_RE.search(title or ''))
 
 
 def _safe_json(text: str) -> dict | list | None:
@@ -112,11 +140,21 @@ async def select_best(
     catalog = []
     for i, art in enumerate(articles):
         body_preview = (art.get('body') or '')[:_MAX_BODY_CHARS_FOR_SELECTION]
+        title = art.get('title', '')
+        date = art.get('date') or 'não informada'
+        flag = (
+            '\n⚠ ALERTA: o título parece conteúdo superficial (lista/dica/tutorial/how-to). '
+            'Só selecione se for, de fato, uma notícia real e importante; caso contrário dê score baixo.'
+            if _looks_superficial(title)
+            else ''
+        )
         catalog.append(
             f'### Artigo {i}\n'
-            f'Título: {art.get("title", "")}\n'
+            f'Título: {title}\n'
             f'Fonte: {art.get("source", "")}\n'
+            f'Data: {date}\n'
             f'Trecho: {body_preview}'
+            f'{flag}'
         )
 
     system = (
@@ -172,11 +210,15 @@ async def select_best(
             continue
         if idx < 0 or idx >= len(articles) or idx in used:
             continue
+        score = _coerce_score(item.get('score'))
+        # Hard quality floor: never publish what the AI itself scored as weak.
+        if score < _MIN_SELECTION_SCORE:
+            continue
         used.add(idx)
         picks.append(
             {
                 'index': idx,
-                'score': _coerce_score(item.get('score')),
+                'score': score,
                 'reason': str(item.get('reason') or '').strip(),
             }
         )
