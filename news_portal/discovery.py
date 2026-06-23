@@ -18,6 +18,7 @@ Both paths return the same lightweight reference shape:
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from apify import Actor
@@ -27,9 +28,9 @@ GOOGLE_NEWS_ACTOR = 'fabri-lab/apify-google-news-scraper'
 # Fallback: generic Google organic search (the original source).
 GOOGLE_SEARCH_ACTOR = 'apify/google-search-scraper'
 
-# Default recency window for Google News. "1d" = last 24h, so we naturally surface the
-# day's most relevant stories and barely ever re-see something from a previous run.
-DEFAULT_RECENCY = '1d'
+# Default recency window, in days. Only news published within the last N days are
+# considered, so we surface fresh, relevant stories. 0 = no date limit (any time).
+DEFAULT_LAST_DAYS = 2
 
 # Map our country code to the Google News Actor's (googleCountry, uiLanguage). Its enums
 # have no Portugal option, so "pt" uses Brazilian context as the closest match.
@@ -75,19 +76,21 @@ async def search_news(
     query: str,
     max_articles: int,
     country_code: str,
-    recency: str = DEFAULT_RECENCY,
+    last_days: int = DEFAULT_LAST_DAYS,
 ) -> list[dict]:
     """Return up to ``max_articles`` candidate news references for ``query``.
 
-    Tries Google News first (relevance + ``recency`` window); on any failure or empty
-    result, falls back to generic Google organic search. Each item:
+    Only news published within the last ``last_days`` days are considered (``0`` = no
+    date limit). Tries Google News first (relevance-ranked, date-filtered); on any
+    failure or empty result, falls back to generic Google organic search. Each item:
     ``{title, url, source, snippet, date, body?}``.
     """
+    window = 'sem limite de data' if last_days <= 0 else f'últimos {last_days} dia(s)'
     try:
-        articles = await _search_google_news(query, max_articles, country_code, recency)
+        articles = await _search_google_news(query, max_articles, country_code, last_days)
         if articles:
             Actor.log.info(
-                f'Discovery (Google News, recência={recency}) encontrou {len(articles)} '
+                f'Discovery (Google News, {window}) encontrou {len(articles)} '
                 f'candidato(s) ordenados por relevância.'
             )
             return articles
@@ -95,21 +98,29 @@ async def search_news(
     except Exception as exc:  # noqa: BLE001 - degrade to the original source
         Actor.log.warning(f'Actor de Google News falhou ({exc}); usando fallback (busca orgânica).')
 
-    return await _search_google_organic(query, max_articles, country_code)
+    return await _search_google_organic(query, max_articles, country_code, last_days)
+
+
+def _date_window(last_days: int) -> tuple[str, str] | None:
+    """Return ``(min_date, max_date)`` ISO strings for the last ``last_days`` days.
+
+    ``None`` when there is no date limit (``last_days <= 0``).
+    """
+    if last_days <= 0:
+        return None
+    today = datetime.now(timezone.utc).date()
+    return (today - timedelta(days=last_days)).isoformat(), today.isoformat()
 
 
 async def _search_google_news(
-    query: str, max_articles: int, country_code: str, recency: str
+    query: str, max_articles: int, country_code: str, last_days: int
 ) -> list[dict]:
-    """Discover via the Google News Actor: relevance-ranked, recency-filtered."""
+    """Discover via the Google News Actor: relevance-ranked, date-filtered."""
     google_country, ui_language = _NEWS_LOCALE.get(country_code, ('US', 'en'))
     run_input = {
         'searchQuery': query,
         'googleCountry': google_country,
         'uiLanguage': ui_language,
-        # Recency window ("1d" = last 24h). Google News default order is by relevance,
-        # so within the window we get the most relevant (most covered) stories first.
-        'timePeriod': recency or DEFAULT_RECENCY,
         'maxItems': min(max(max_articles, 1), 1000),
         # Pull the article body too, so the rewrite has real content regardless of
         # whether our own extractor can reach the (often redirected) publisher URL.
@@ -117,9 +128,18 @@ async def _search_google_news(
         # Let Google drop near-duplicate / omitted results.
         'filter': True,
     }
+    # Date filter: the Actor's `timePeriod` only takes fixed enums, so for an arbitrary
+    # "last N days" we use a custom range (min = N days ago, max = today). 0 = any time.
+    window = _date_window(last_days)
+    if window is None:
+        run_input['timePeriod'] = 'all'
+    else:
+        run_input['timePeriod'] = 'custom'
+        run_input['customTimePeriodMin'], run_input['customTimePeriodMax'] = window
     Actor.log.info(
         f'Buscando notícias de "{query}" via {GOOGLE_NEWS_ACTOR} '
-        f'(país={google_country}, idioma={ui_language}, recência={run_input["timePeriod"]})...'
+        f'(país={google_country}, idioma={ui_language}, '
+        f'janela={"qualquer data" if window is None else f"{window[0]}..{window[1]}"})...'
     )
     run = await Actor.call(GOOGLE_NEWS_ACTOR, run_input=run_input)
 
@@ -155,12 +175,17 @@ async def _search_google_news(
     return articles
 
 
-async def _search_google_organic(query: str, max_articles: int, country_code: str) -> list[dict]:
+async def _search_google_organic(
+    query: str, max_articles: int, country_code: str, last_days: int
+) -> list[dict]:
     """Fallback: the original generic Google organic search via the search Actor."""
     # Pull a few extra results because some will be filtered out as non-articles.
     results_per_page = min(max(max_articles * 2, 10), 100)
+    # Restrict to recent results with Google's `after:` date operator (0 = no limit).
+    window = _date_window(last_days)
+    effective_query = query if window is None else f'{query} after:{window[0]}'
     search_input = {
-        'queries': query,
+        'queries': effective_query,
         'resultsPerPage': results_per_page,
         'maxPagesPerQuery': 1,
         'countryCode': country_code,

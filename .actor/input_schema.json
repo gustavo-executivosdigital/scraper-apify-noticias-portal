@@ -27,6 +27,15 @@
             "minimum": 1,
             "maximum": 20
         },
+        "lastDays": {
+            "title": "Últimos N dias",
+            "type": "integer",
+            "description": "Só considera notícias publicadas nos últimos N dias (ex.: 2 = últimas 48h). Use 0 para não filtrar por data. Quanto menor, mais fresca a notícia.",
+            "default": 2,
+            "minimum": 0,
+            "maximum": 365,
+            "unit": "dias"
+        },
         "countryCode": {
             "title": "País",
             "type": "string",
