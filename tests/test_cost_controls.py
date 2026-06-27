@@ -9,17 +9,22 @@ class _FakeActor:
     log = types.SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None)
 
 
-sys.modules.setdefault("apify", types.SimpleNamespace(Actor=_FakeActor))
+_FakeEvent = types.SimpleNamespace(ABORTING="ABORTING")
+
+
+sys.modules.setdefault("apify", types.SimpleNamespace(Actor=_FakeActor, Event=_FakeEvent))
 sys.modules.setdefault("httpx", types.SimpleNamespace(HTTPError=Exception, AsyncClient=object, Response=object))
 
 discovery = importlib.import_module("news_portal.discovery")
 ai_groq = importlib.import_module("news_portal.ai_groq")
+main_module = importlib.import_module("news_portal.main")
 
 
 class DiscoveryCostControlsTest(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("NEWS_ENABLE_GOOGLE_SEARCH_FALLBACK", None)
         os.environ.pop("NEWS_EXTRACT_FULL_TEXT_IN_GOOGLE_NEWS", None)
+        os.environ.pop("NEWS_ENABLE_CONTENT_CRAWLER", None)
 
     def test_google_search_fallback_is_disabled_by_default(self):
         os.environ.pop("NEWS_ENABLE_GOOGLE_SEARCH_FALLBACK", None)
@@ -40,6 +45,16 @@ class DiscoveryCostControlsTest(unittest.TestCase):
         os.environ["NEWS_EXTRACT_FULL_TEXT_IN_GOOGLE_NEWS"] = "true"
 
         self.assertTrue(discovery._google_news_full_text_enabled())
+
+    def test_content_crawler_is_disabled_by_default(self):
+        os.environ.pop("NEWS_ENABLE_CONTENT_CRAWLER", None)
+
+        self.assertFalse(main_module._content_crawler_enabled())
+
+    def test_content_crawler_can_be_enabled_by_env_only(self):
+        os.environ["NEWS_ENABLE_CONTENT_CRAWLER"] = "true"
+
+        self.assertTrue(main_module._content_crawler_enabled())
 
     def test_article_filter_rejects_job_and_classified_urls(self):
         bad_urls = [
@@ -97,6 +112,30 @@ class GroqPreflightTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "Organization has been restricted"):
             await ai_groq.preflight(client, "key", "llama-3.3-70b-versatile")
+
+
+class RewritePromptCostControlsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_short_source_material_asks_for_concise_factual_note(self):
+        client = _FakeClient(
+            _FakeResponse(
+                200,
+                payload={"choices": [{"message": {"content": '{"title":"t","resumo":"r","tags":[],"body":"b"}'}}]},
+            )
+        )
+
+        await ai_groq.rewrite_article(
+            client,
+            "key",
+            "llama-3.3-70b-versatile",
+            title="ANTT publica nova regra para frete",
+            body="Titulo: ANTT publica nova regra para frete\nFonte: Exemplo",
+            title_style="portal",
+        )
+
+        messages = client.calls[0][1]["json"]["messages"]
+        joined = "\n".join(m["content"] for m in messages)
+        self.assertIn("REGRA FINAL PARA FONTE CURTA", joined)
+        self.assertIn("nota factual curta", joined)
 
 
 if __name__ == "__main__":

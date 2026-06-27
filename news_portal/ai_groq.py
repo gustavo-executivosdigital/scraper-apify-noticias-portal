@@ -410,12 +410,26 @@ async def rewrite_article(
     )
 
     original = body[:_MAX_BODY_CHARS_FOR_REWRITE]
+    short_source = len((body or '').strip()) < 500
     truncated_note = (
         '\n\n(OBS: o texto acima pode estar truncado; reescreva apenas com base no que recebeu, '
         'sem inventar um final.)'
         if len(body) > _MAX_BODY_CHARS_FOR_REWRITE
         else ''
     )
+    if short_source:
+        length_instruction = (
+            'A fonte abaixo e curta. Escreva uma nota factual curta, direta e publicavel, '
+            'com 2 a 4 paragrafos, usando apenas as informacoes disponiveis. Nao invente '
+            'contexto, numeros, impacto, declaracoes ou desdobramentos que nao estejam no material.'
+        )
+    else:
+        length_instruction = (
+            'Escreva uma materia substancial e bem desenvolvida, com pelo menos 1000 caracteres. '
+            'Quando a materia original for rica em informacao, va mais longe e aproveite ao maximo '
+            'todos os fatos disponiveis. Quando a fonte for pobre, desenvolva o que houver com '
+            'clareza, sem inventar nem repetir ideias so para alongar. Paragrafos separados por \\n\\n.'
+        )
 
     system = (
         'Você é um jornalista de um portal brasileiro especializado em LOGÍSTICA, transporte, '
@@ -444,7 +458,8 @@ async def rewrite_article(
         'for pobre, desenvolva o que houver com clareza, sem inventar nem repetir ideias só para '
         'alongar. Parágrafos separados por \\n\\n; você pode usar 1 ou 2 subtítulos curtos de seção '
         '(uma linha própria, sem markdown e sem dois-pontos) quando o conteúdo justificar.\n\n'
-        'Responda no formato JSON exato:\n'
+        + (f'\n\nREGRA FINAL PARA FONTE CURTA: {length_instruction}\n\n' if short_source else '')
+        + 'Responda no formato JSON exato:\n'
         '{"title": "<novo título>", '
         '"resumo": "<resumo real da matéria em 1 a 2 frases, no máximo 280 caracteres, sem repetir o título>", '
         '"tags": ["<3 a 6 termos curtos do tema de logística, em pt-BR e minúsculas>"], '

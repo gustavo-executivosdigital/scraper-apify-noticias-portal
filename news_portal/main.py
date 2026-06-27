@@ -95,6 +95,26 @@ def _lead(body: str) -> str:
     return first[:300]
 
 
+def _content_crawler_enabled() -> bool:
+    """Cost guard: Website Content Crawler is opt-in via env, not default."""
+    value = os.environ.get('NEWS_ENABLE_CONTENT_CRAWLER', '')
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _source_material(art: dict) -> str:
+    """Build the best available factual source material without extra crawling."""
+    body = (art.get('body') or '').strip() or (art.get('snippet') or '').strip()
+    if body:
+        return body
+    parts = [
+        f'Titulo: {art.get("title", "")}',
+        f'Fonte: {art.get("source", "")}',
+        f'Data: {art.get("date", "")}',
+        f'URL: {art.get("url", "")}',
+    ]
+    return '\n'.join(p for p in parts if p.split(': ', 1)[-1].strip())
+
+
 async def main() -> None:
     async with Actor:
         # Graceful abort - stop quickly when the user/platform stops the Actor.
@@ -166,7 +186,7 @@ async def main() -> None:
         # when available, otherwise from snippet/title, then crawl only the picks.
         enriched: list[dict] = []
         for art in articles:
-            body = (art.get('body') or '').strip() or (art.get('snippet') or '').strip()
+            body = _source_material(art)
             enriched.append({**art, 'body': body})
 
         if not enriched:
@@ -200,31 +220,29 @@ async def main() -> None:
 
             Actor.log.info(f'Selected {len(picks)} articles to rewrite and publish.')
 
-            selected_indices = [pick['index'] for pick in picks if 0 <= pick['index'] < len(enriched)]
-            urls_needing_body = [
-                enriched[i]['url']
-                for i in selected_indices
-                if len((enriched[i].get('body') or '').strip()) < extraction.MIN_BODY_CHARS
-            ]
-            if urls_needing_body:
-                try:
-                    bodies = await extraction.fetch_bodies(urls_needing_body)
-                except Exception as exc:  # noqa: BLE001 - skip short bodies below
-                    Actor.log.warning(f'Body extraction failed for selected articles ({exc}).')
-                    bodies = {}
-                for i in selected_indices:
-                    body = bodies.get(enriched[i]['url'])
-                    if body:
-                        enriched[i]['body'] = body
+            if _content_crawler_enabled():
+                selected_indices = [pick['index'] for pick in picks if 0 <= pick['index'] < len(enriched)]
+                urls_needing_body = [
+                    enriched[i]['url']
+                    for i in selected_indices
+                    if len((enriched[i].get('body') or '').strip()) < extraction.MIN_BODY_CHARS
+                ]
+                if urls_needing_body:
+                    try:
+                        bodies = await extraction.fetch_bodies(urls_needing_body)
+                    except Exception as exc:  # noqa: BLE001 - keep snippet/source material
+                        Actor.log.warning(f'Body extraction failed for selected articles ({exc}).')
+                        bodies = {}
+                    for i in selected_indices:
+                        body = bodies.get(enriched[i]['url'])
+                        if body:
+                            enriched[i]['body'] = body
+            else:
+                Actor.log.info('Website Content Crawler disabled; publishing from Google News metadata/snippets.')
 
             published = 0
             for position, pick in enumerate(picks):
                 art = enriched[pick['index']]
-                if len((art.get('body') or '').strip()) < extraction.MIN_BODY_CHARS:
-                    Actor.log.warning(
-                        f'Skipping "{art["title"]}": selected article still has too little body text.'
-                    )
-                    continue
 
                 # Rewrite.
                 try:
