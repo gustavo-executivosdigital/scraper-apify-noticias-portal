@@ -69,6 +69,34 @@ _SUPERFICIAL_TITLE_RE = re.compile(
 )
 
 
+async def preflight(client: httpx.AsyncClient, api_key: str, model: str) -> None:
+    """Validate the Groq key/model with a tiny request before expensive discovery.
+
+    This intentionally does not use the retry-heavy ``_chat`` helper: if Groq is
+    restricted, invalid, out of credit, or rate-limited, we want to stop before
+    calling composed Apify Actors.
+    """
+    payload = {
+        'model': model or DEFAULT_MODEL,
+        'messages': [{'role': 'user', 'content': 'OK'}],
+        'temperature': 0,
+        'max_tokens': 1,
+    }
+    try:
+        response = await client.post(
+            GROQ_URL,
+            headers={'Authorization': f'Bearer {api_key}'},
+            json=payload,
+            timeout=30,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f'Groq preflight failed: {exc}') from exc
+
+    if response.status_code == 200:
+        return
+    raise RuntimeError(f'Groq preflight failed {response.status_code}: {response.text[:300]}')
+
+
 def _looks_superficial(title: str) -> bool:
     """Heuristic flag for listicle/how-to/tips titles (soft signal, not an auto-drop)."""
     return bool(_SUPERFICIAL_TITLE_RE.search(title or ''))

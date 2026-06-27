@@ -141,6 +141,10 @@ async def main() -> None:
             )
             enable_image = False
 
+        # Stop before composed Apify Actors if Groq cannot publish anything.
+        async with httpx.AsyncClient() as client:
+            await ai_groq.preflight(client, groq_api_key, groq_model)
+
         # --- 1. Discover ----------------------------------------------------------
         # Funil: para entregar ``num_to_select`` notícias DISTINTAS e boas, precisamos de um
         # pool de candidatos bem maior que isso — notícias de logística costumam vir em
@@ -157,29 +161,18 @@ async def main() -> None:
             Actor.log.warning('No news articles found for this term. Try a broader or different query.')
             return
 
-        # --- 2. Extract full bodies (infallible content crawler) ------------------
-        # Google News discovery may already carry the article body (``extractFullText``).
-        # Only crawl the ones still missing a body, to save time and Compute Units.
-        urls_needing_body = [a['url'] for a in articles if not (a.get('body') or '').strip()]
-        bodies: dict = {}
-        if urls_needing_body:
-            try:
-                bodies = await extraction.fetch_bodies(urls_needing_body)
-            except Exception as exc:  # noqa: BLE001 - degrade: continue with snippets
-                Actor.log.warning(f'Body extraction failed ({exc}); falling back to search snippets.')
-                bodies = {}
-
+        # --- 2. Prepare low-cost candidates ---------------------------------------
+        # Do not crawl every candidate up front. Select from Google News fullText
+        # when available, otherwise from snippet/title, then crawl only the picks.
         enriched: list[dict] = []
         for art in articles:
-            body = (art.get('body') or '').strip() or bodies.get(art['url']) or art.get('snippet') or ''
-            if not body.strip():
-                continue
+            body = (art.get('body') or '').strip() or (art.get('snippet') or '').strip()
             enriched.append({**art, 'body': body})
 
         if not enriched:
-            Actor.log.warning('Could not extract usable text from any article.')
+            Actor.log.warning('No usable candidates remained after discovery.')
             return
-        Actor.log.info(f'{len(enriched)} articles have usable text for selection.')
+        Actor.log.info(f'{len(enriched)} articles available for low-cost selection.')
 
         # --- 2b. Dedup: nunca pegar notícia repetida ------------------------------
         # Collapse same-story duplicates from different sources in THIS run, then drop
@@ -207,9 +200,31 @@ async def main() -> None:
 
             Actor.log.info(f'Selected {len(picks)} articles to rewrite and publish.')
 
+            selected_indices = [pick['index'] for pick in picks if 0 <= pick['index'] < len(enriched)]
+            urls_needing_body = [
+                enriched[i]['url']
+                for i in selected_indices
+                if len((enriched[i].get('body') or '').strip()) < extraction.MIN_BODY_CHARS
+            ]
+            if urls_needing_body:
+                try:
+                    bodies = await extraction.fetch_bodies(urls_needing_body)
+                except Exception as exc:  # noqa: BLE001 - skip short bodies below
+                    Actor.log.warning(f'Body extraction failed for selected articles ({exc}).')
+                    bodies = {}
+                for i in selected_indices:
+                    body = bodies.get(enriched[i]['url'])
+                    if body:
+                        enriched[i]['body'] = body
+
             published = 0
             for position, pick in enumerate(picks):
                 art = enriched[pick['index']]
+                if len((art.get('body') or '').strip()) < extraction.MIN_BODY_CHARS:
+                    Actor.log.warning(
+                        f'Skipping "{art["title"]}": selected article still has too little body text.'
+                    )
+                    continue
 
                 # Rewrite.
                 try:

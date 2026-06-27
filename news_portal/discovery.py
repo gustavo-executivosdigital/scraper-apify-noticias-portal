@@ -17,6 +17,7 @@ Both paths return the same lightweight reference shape:
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -50,6 +51,32 @@ _SKIP_HOSTS = (
     'x.com',
     'tiktok.com',
     'wikipedia.org',
+    'linkedin.com',
+    'infojobs.com.br',
+    'adzuna.com.br',
+    'jobleads.com',
+    'talent.com',
+    'net-empregos.com',
+    'jobfy.pro',
+    'indeed.com',
+    'catho.com.br',
+    'vagas.com.br',
+    'glassdoor.com',
+    'bne.com.br',
+    'olx.com.br',
+    'zapimoveis.com.br',
+    'vivareal.com.br',
+    'quintoandar.com.br',
+    'imovelweb.com.br',
+    'lopestiete.com.br',
+    'bassanesi.com.br',
+    'exonimoveis.com.br',
+)
+
+_SKIP_PATH_RE = re.compile(
+    r'/(?:jobs?|vagas?|empregos?)(?:/|$)|vaga-de|detalhes-do-imovel|'
+    r'apartamento.*loca[cç][aã]o|imove[lil]|operador-logistico',
+    re.IGNORECASE,
 )
 
 
@@ -69,7 +96,21 @@ def _is_article(url: str) -> bool:
         return False
     # An article usually has a path (slug), not just the domain root.
     path = urlparse(url).path.strip('/')
-    return len(path) > 1
+    if len(path) <= 1:
+        return False
+    return not _SKIP_PATH_RE.search('/' + path)
+
+
+def _google_search_fallback_enabled() -> bool:
+    """Cost guard: generic Google Search fallback is opt-in via env, not default."""
+    value = os.environ.get('NEWS_ENABLE_GOOGLE_SEARCH_FALLBACK', '')
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _google_news_full_text_enabled() -> bool:
+    """Cost guard: Google News full-text extraction is opt-in via env."""
+    value = os.environ.get('NEWS_EXTRACT_FULL_TEXT_IN_GOOGLE_NEWS', '')
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 async def search_news(
@@ -94,8 +135,20 @@ async def search_news(
                 f'candidato(s) ordenados por relevância.'
             )
             return articles
+        if not _google_search_fallback_enabled():
+            Actor.log.warning(
+                'Google News nao retornou candidatos; fallback de busca organica '
+                'desligado para evitar custo com resultados genericos.'
+            )
+            return []
         Actor.log.warning('Google News não retornou candidatos; usando fallback (busca orgânica).')
     except Exception as exc:  # noqa: BLE001 - degrade to the original source
+        if not _google_search_fallback_enabled():
+            Actor.log.warning(
+                f'Actor de Google News falhou ({exc}); fallback de busca organica '
+                'desligado para evitar custo com resultados genericos.'
+            )
+            return []
         Actor.log.warning(f'Actor de Google News falhou ({exc}); usando fallback (busca orgânica).')
 
     return await _search_google_organic(query, max_articles, country_code, last_days)
@@ -124,7 +177,7 @@ async def _search_google_news(
         'maxItems': min(max(max_articles, 1), 1000),
         # Pull the article body too, so the rewrite has real content regardless of
         # whether our own extractor can reach the (often redirected) publisher URL.
-        'extractFullText': True,
+        'extractFullText': _google_news_full_text_enabled(),
         # Let Google drop near-duplicate / omitted results.
         'filter': True,
     }
