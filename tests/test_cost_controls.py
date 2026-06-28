@@ -1,5 +1,4 @@
 import importlib
-import os
 import sys
 import types
 import unittest
@@ -21,40 +20,16 @@ main_module = importlib.import_module("news_portal.main")
 
 
 class DiscoveryCostControlsTest(unittest.TestCase):
-    def tearDown(self):
-        os.environ.pop("NEWS_ENABLE_GOOGLE_SEARCH_FALLBACK", None)
-        os.environ.pop("NEWS_EXTRACT_FULL_TEXT_IN_GOOGLE_NEWS", None)
-        os.environ.pop("NEWS_ENABLE_CONTENT_CRAWLER", None)
+    def test_discovery_uses_only_google_search_actor(self):
+        self.assertEqual(discovery.GOOGLE_SEARCH_ACTOR, "apify/google-search-scraper")
+        self.assertFalse(hasattr(discovery, "GOOGLE_NEWS_ACTOR"))
+        self.assertFalse(hasattr(discovery, "_search_google_news"))
+        self.assertFalse(hasattr(discovery, "_google_news_full_text_enabled"))
+        self.assertFalse(hasattr(discovery, "_google_search_fallback_enabled"))
 
-    def test_google_search_fallback_is_disabled_by_default(self):
-        os.environ.pop("NEWS_ENABLE_GOOGLE_SEARCH_FALLBACK", None)
-
-        self.assertFalse(discovery._google_search_fallback_enabled())
-
-    def test_google_search_fallback_can_be_enabled_by_env_only(self):
-        os.environ["NEWS_ENABLE_GOOGLE_SEARCH_FALLBACK"] = "true"
-
-        self.assertTrue(discovery._google_search_fallback_enabled())
-
-    def test_google_news_full_text_extraction_is_disabled_by_default(self):
-        os.environ.pop("NEWS_EXTRACT_FULL_TEXT_IN_GOOGLE_NEWS", None)
-
-        self.assertFalse(discovery._google_news_full_text_enabled())
-
-    def test_google_news_full_text_extraction_can_be_enabled_by_env_only(self):
-        os.environ["NEWS_EXTRACT_FULL_TEXT_IN_GOOGLE_NEWS"] = "true"
-
-        self.assertTrue(discovery._google_news_full_text_enabled())
-
-    def test_content_crawler_is_disabled_by_default(self):
-        os.environ.pop("NEWS_ENABLE_CONTENT_CRAWLER", None)
-
-        self.assertFalse(main_module._content_crawler_enabled())
-
-    def test_content_crawler_can_be_enabled_by_env_only(self):
-        os.environ["NEWS_ENABLE_CONTENT_CRAWLER"] = "true"
-
-        self.assertTrue(main_module._content_crawler_enabled())
+    def test_content_crawler_runtime_hook_is_removed(self):
+        self.assertFalse(hasattr(main_module, "_content_crawler_enabled"))
+        self.assertFalse(hasattr(main_module, "extraction"))
 
     def test_article_filter_rejects_job_and_classified_urls(self):
         bad_urls = [

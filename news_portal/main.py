@@ -2,14 +2,13 @@
 
 Pipeline:
 1. Discover news articles on Google for the search term.
-2. Extract the full body of each candidate (infallible content crawler).
-3. A Groq AI selects the best N articles.
-4. A Groq AI rewrites each selected article for original republication.
-5. (Optional) Generate a high-quality editorial image per article (Gemini Nano Banana via OpenRouter).
-6. Push one republished item per article to the dataset.
+2. A Groq AI selects the best N articles from Google result metadata/snippets.
+3. A Groq AI rewrites each selected article for original republication.
+4. (Optional) Generate a high-quality editorial image per article (Gemini Nano Banana via OpenRouter).
+5. Push one republished item per article to the dataset.
 
-Every stage degrades gracefully: a failure in extraction, selection, rewriting,
-or image generation is logged and the run continues with whatever succeeded.
+Every stage degrades gracefully: a failure in selection, rewriting, or image
+generation is logged and the run continues with whatever succeeded.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ import os
 import httpx
 from apify import Actor, Event
 
-from . import ai_groq, dedup, discovery, extraction, image_gen
+from . import ai_groq, dedup, discovery, image_gen
 
 
 async def _kvs_public_url(store: object, key: str) -> str | None:
@@ -93,12 +92,6 @@ def _lead(body: str) -> str:
     """First paragraph (or first chunk) of a body, for the image prompt."""
     first = next((p.strip() for p in (body or '').split('\n') if p.strip()), '')
     return first[:300]
-
-
-def _content_crawler_enabled() -> bool:
-    """Cost guard: Website Content Crawler is opt-in via env, not default."""
-    value = os.environ.get('NEWS_ENABLE_CONTENT_CRAWLER', '')
-    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _source_material(art: dict) -> str:
@@ -182,8 +175,8 @@ async def main() -> None:
             return
 
         # --- 2. Prepare low-cost candidates ---------------------------------------
-        # Do not crawl every candidate up front. Select from Google News fullText
-        # when available, otherwise from snippet/title, then crawl only the picks.
+        # No composed crawler is used here. Selection and rewriting are based on the
+        # Google Search result metadata/snippet plus source attribution.
         enriched: list[dict] = []
         for art in articles:
             body = _source_material(art)
@@ -220,25 +213,7 @@ async def main() -> None:
 
             Actor.log.info(f'Selected {len(picks)} articles to rewrite and publish.')
 
-            if _content_crawler_enabled():
-                selected_indices = [pick['index'] for pick in picks if 0 <= pick['index'] < len(enriched)]
-                urls_needing_body = [
-                    enriched[i]['url']
-                    for i in selected_indices
-                    if len((enriched[i].get('body') or '').strip()) < extraction.MIN_BODY_CHARS
-                ]
-                if urls_needing_body:
-                    try:
-                        bodies = await extraction.fetch_bodies(urls_needing_body)
-                    except Exception as exc:  # noqa: BLE001 - keep snippet/source material
-                        Actor.log.warning(f'Body extraction failed for selected articles ({exc}).')
-                        bodies = {}
-                    for i in selected_indices:
-                        body = bodies.get(enriched[i]['url'])
-                        if body:
-                            enriched[i]['body'] = body
-            else:
-                Actor.log.info('Website Content Crawler disabled; publishing from Google News metadata/snippets.')
+            Actor.log.info('Content crawler removed; publishing from Google Search metadata/snippets.')
 
             published = 0
             for position, pick in enumerate(picks):
